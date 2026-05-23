@@ -37,36 +37,67 @@ body {
     padding: 2rem 1.5rem;
 }
 
-.header-container, main, footer {
+main, footer {
     max-width: var(--max-width);
     margin: 0 auto;
 }
 
-header {
+.site-header {
     border-bottom: 1px solid var(--border-color);
-    padding-bottom: 1.5rem;
+    padding: 1.5rem 1.5rem;
     margin-bottom: 2rem;
 }
 
-h1 {
-    font-size: 2rem;
-    margin: 0 0 0.5rem 0;
-    font-weight: 700;
-    letter-spacing: -0.025em;
+.site-header .header-container {
+    max-width: var(--max-width);
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
 }
 
-.tagline {
+.site-title {
     font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
     color: var(--text-color);
-    font-weight: 600;
-    margin: 0 0 0.25rem 0;
+}
+
+.site-title:hover {
+    text-decoration: none;
+}
+
+.site-nav {
+    display: flex;
+    align-items: center;
+}
+
+.site-nav .trigger {
+    display: flex;
+    gap: 1.25rem;
+    flex-wrap: wrap;
+}
+
+.page-link {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-color);
+    text-decoration: none;
+}
+
+.page-link:hover {
+    text-decoration: underline;
+    color: var(--link-color);
 }
 
 .sub-tagline {
     font-size: 1rem;
     color: var(--text-color);
-    opacity: 0.7;
-    margin: 0;
+    opacity: 0.85;
+    margin: 0 0 1.5rem 0;
+    line-height: 1.4;
 }
 
 h2 {
@@ -138,15 +169,21 @@ footer {
     text-align: center;
 }
 
-.profile-pic-container {
-    margin-bottom: 1.5rem;
+.profile-pic {
+    width: 200px;
+    height: auto;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    margin: 0px 25px 15px 0px;
+    float: left;
 }
 
-.profile-pic {
-    width: 120px;
-    height: 120px;
-    object-fit: cover;
-    border-radius: 50%;
-    border: 2px solid var(--border-color);
-    display: block;
+@media (max-width: 500px) {
+    .profile-pic {
+        width: 100%;
+        max-width: 250px;
+        float: none;
+        margin: 0 auto 1.5rem auto;
+        display: block;
+    }
 }

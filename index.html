@@ -10,30 +10,39 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <header>
+    <header class="site-header">
         <div class="header-container">
-            <h1>Emmanuel O. Badmus</h1>
-            <p class="tagline">Power Systems &amp; AI Researcher</p>
-            <p class="sub-tagline">Ph.D. Researcher @ UVM</p>
+            <a class="site-title" href="/">Emmanuel O. Badmus</a>
+            <nav class="site-nav">
+                <div class="trigger">
+                    <a class="page-link" href="#about">About</a>
+                    <a class="page-link" href="#expertise">Expertise</a>
+                    <a class="page-link" href="#timeline">Timeline</a>
+                    <a class="page-link" href="#publications">Research</a>
+                    <a class="page-link" href="#contact">Contact</a>
+                </div>
+            </nav>
         </div>
     </header>
 
     <main>
         <!-- ABOUT -->
-        <section id="about">
-            <h2>About</h2>
-            <div class="profile-pic-container">
-                <img src="headshot.jpg" alt="Emmanuel O. Badmus" class="profile-pic">
+        <section id="about" class="about-section">
+            <img src="headshot.jpg" alt="Emmanuel O. Badmus" class="profile-pic" width="200" align="left">
+            <div class="about-content">
+                <h2>Greetings from Vermont!</h2>
+                <p class="sub-tagline"><strong>Power Systems &amp; AI Researcher | Ph.D. Researcher @ UVM</strong></p>
+                <p>
+                    I am a Ph.D. researcher in Electrical Engineering at the <strong>University of Vermont</strong>, working in the <strong>GOAL LAB</strong> under the supervision of <a href="https://www.amrit-pandey.com/" target="_blank" rel="noopener noreferrer">Dr. Amritanshu Pandey</a>. My research develops mathematical models, optimization algorithms, and AI-driven tools that make power grids smarter, cleaner, and more resilient.
+                </p>
+                <p>
+                    Beyond the lab, I serve as Chief Technical Adviser at <strong>PAWATANK</strong>, guiding the design of solar-powered, NFC-enabled charging infrastructure for underserved communities in Africa.
+                </p>
+                <p>
+                    My journey spans four institutions across three continents, giving me a global perspective on the energy challenges — and opportunities — facing the world today.
+                </p>
             </div>
-            <p>
-                I am a Ph.D. researcher in Electrical Engineering at the <strong>University of Vermont</strong>, working in the <strong>GOAL LAB</strong> under the supervision of <a href="https://www.amrit-pandey.com/" target="_blank" rel="noopener noreferrer">Dr. Amritanshu Pandey</a>. My research develops mathematical models, optimization algorithms, and AI-driven tools that make power grids smarter, cleaner, and more resilient.
-            </p>
-            <p>
-                Beyond the lab, I serve as Chief Technical Adviser at <strong>PAWATANK</strong>, guiding the design of solar-powered, NFC-enabled charging infrastructure for underserved communities in Africa.
-            </p>
-            <p>
-                My journey spans four institutions across three continents, giving me a global perspective on the energy challenges — and opportunities — facing the world today.
-            </p>
+            <div style="clear: left;"></div>
         </section>
 
         <!-- CORE EXPERTISE -->
