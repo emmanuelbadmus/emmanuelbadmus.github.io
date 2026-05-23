@@ -1,0 +1,132 @@
+/* 
+   Emmanuel Badmus - Personal Website Style Sheet
+   A clean, minimalist, high-performance stylesheet.
+   Uses system font stacks and respects system prefers-color-scheme.
+*/
+
+:root {
+    --bg-color: #ffffff;
+    --text-color: #1a1a1a;
+    --link-color: #2563eb;
+    --link-hover: #1d4ed8;
+    --border-color: #e5e7eb;
+    --max-width: 650px;
+    --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-color: #0f172a;
+        --text-color: #f1f5f9;
+        --link-color: #60a5fa;
+        --link-hover: #93c5fd;
+        --border-color: #334155;
+    }
+}
+
+* {
+    box-sizing: border-box;
+}
+
+body {
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    font-family: var(--font-family);
+    line-height: 1.6;
+    margin: 0;
+    padding: 2rem 1.5rem;
+}
+
+.header-container, main, footer {
+    max-width: var(--max-width);
+    margin: 0 auto;
+}
+
+header {
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+h1 {
+    font-size: 2rem;
+    margin: 0 0 0.5rem 0;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+}
+
+.tagline {
+    font-size: 1.1rem;
+    color: var(--text-color);
+    opacity: 0.8;
+    margin: 0;
+}
+
+h2 {
+    font-size: 1.4rem;
+    margin: 2rem 0 1rem 0;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 0.3rem;
+}
+
+p {
+    margin: 0 0 1.2rem 0;
+}
+
+a {
+    color: var(--link-color);
+    text-decoration: none;
+    transition: color 0.15s ease;
+}
+
+a:hover {
+    color: var(--link-hover);
+    text-decoration: underline;
+}
+
+ul {
+    padding-left: 1.2rem;
+    margin: 0 0 1.5rem 0;
+}
+
+li {
+    margin-bottom: 0.6rem;
+}
+
+.project-list {
+    list-style-type: none;
+    padding-left: 0;
+}
+
+.project-list li {
+    margin-bottom: 1rem;
+}
+
+.project-desc {
+    opacity: 0.8;
+}
+
+.placeholder-link {
+    color: var(--text-color);
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.placeholder-link:hover {
+    text-decoration: none;
+}
+
+.contact-links {
+    list-style-type: square;
+}
+
+footer {
+    margin-top: 4rem;
+    border-top: 1px solid var(--border-color);
+    padding-top: 1.5rem;
+    font-size: 0.85rem;
+    opacity: 0.6;
+    text-align: center;
+}
