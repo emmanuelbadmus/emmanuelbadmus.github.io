@@ -199,32 +199,43 @@
                 })
                 .then(data => {
                     if (data && data.results && data.results.length > 0) {
-                        const publicationsList = document.getElementById('publications-list');
-                        publicationsList.innerHTML = '';
-
                         const seenTitles = new Set();
+                        const items = [];
 
                         data.results.forEach(work => {
-                            const titleKey = work.title.toLowerCase().replace(/[^a-z0-9]/g, '');
-                            if (seenTitles.has(titleKey)) return;
-                            seenTitles.add(titleKey);
+                            try {
+                                if (!work.title) return;
+                                const titleKey = work.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+                                if (seenTitles.has(titleKey)) return;
+                                seenTitles.add(titleKey);
 
-                            const li = document.createElement('li');
-                            const authors = work.authorships.map(a => a.author.display_name).join(', ');
-                            const venue = work.primary_location && work.primary_location.source 
-                                ? work.primary_location.source.display_name 
-                                : (work.biblio && work.biblio.volume ? `Journal Vol. ${work.biblio.volume}` : 'Scholarly Work');
-                                
-                            const linkUrl = work.doi || (work.open_access && work.open_access.oa_url ? work.open_access.oa_url : work.id);
-                            const linkText = work.doi ? 'Publisher Link' : 'Open Access PDF';
+                                const authors = work.authorships 
+                                    ? work.authorships.map(a => a.author && a.author.display_name ? a.author.display_name : 'Unknown').join(', ') 
+                                    : 'Unknown';
 
-                            li.innerHTML = `
-                                <strong>${work.title}</strong> (${work.publication_year})<br>
-                                ${authors}<br>
-                                <em>${venue}</em> — <a href="${linkUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>
-                            `;
-                            publicationsList.appendChild(li);
+                                const venue = work.primary_location && work.primary_location.source && work.primary_location.source.display_name 
+                                    ? work.primary_location.source.display_name 
+                                    : (work.biblio && work.biblio.volume ? `Journal Vol. ${work.biblio.volume}` : 'Scholarly Work');
+                                    
+                                const linkUrl = work.doi || (work.open_access && work.open_access.oa_url ? work.open_access.oa_url : work.id);
+                                const linkText = work.doi ? 'Publisher Link' : 'Open Access PDF';
+
+                                items.push(`
+                                    <li>
+                                        <strong>${work.title}</strong> (${work.publication_year})<br>
+                                        ${authors}<br>
+                                        <em>${venue}</em> — <a href="${linkUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>
+                                    </li>
+                                `);
+                            } catch (e) {
+                                console.error('Error processing work:', work, e);
+                            }
                         });
+
+                        if (items.length > 0) {
+                            const publicationsList = document.getElementById('publications-list');
+                            publicationsList.innerHTML = items.join('');
+                        }
                     }
                 })
                 .catch(error => console.error('Error fetching OpenAlex publications:', error));
