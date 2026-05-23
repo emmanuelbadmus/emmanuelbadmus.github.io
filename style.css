@@ -34,23 +34,25 @@ body {
     font-family: var(--font-family);
     line-height: 1.6;
     margin: 0;
-    padding: 2rem 1.5rem;
+    padding: 0;
 }
 
-main, footer {
+main {
     max-width: var(--max-width);
     margin: 0 auto;
+    padding: 0 1.5rem 2rem 1.5rem;
 }
 
 .site-header {
     border-bottom: 1px solid var(--border-color);
-    padding: 1.5rem 1.5rem;
+    padding: 1.5rem 0;
     margin-bottom: 2rem;
 }
 
 .site-header .header-container {
     max-width: var(--max-width);
     margin: 0 auto;
+    padding: 0 1.5rem;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -161,12 +163,17 @@ li {
 }
 
 footer {
-    margin-top: 4rem;
+    max-width: var(--max-width);
+    margin: 4rem auto 0 auto;
     border-top: 1px solid var(--border-color);
-    padding-top: 1.5rem;
+    padding: 1.5rem 1.5rem 2rem 1.5rem;
     font-size: 0.85rem;
     opacity: 0.6;
     text-align: center;
+}
+
+.about-content {
+    overflow: hidden;
 }
 
 .profile-pic {
