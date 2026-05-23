@@ -115,7 +115,6 @@
         <!-- PUBLICATIONS -->
         <section id="publications">
             <h2>Publications &amp; Research</h2>
-            <p><strong>Total Citations (Dynamic via OpenAlex):</strong> <span id="citation-count">Loading...</span></p>
             <ul id="publications-list">
                 <li>
                     <strong>Powerchain: Automating distribution grid analysis with agentic AI workflows</strong> (2025)<br>
@@ -184,13 +183,19 @@
                 .then(data => {
                     if (data && data.results && data.results.length > 0) {
                         const publicationsList = document.getElementById('publications-list');
-                        let totalCitations = 0;
                         
                         // Clear the fallback static list
                         publicationsList.innerHTML = '';
 
+                        // Deduplicate works by title (case-insensitive, alphanumeric only)
+                        const seenTitles = new Set();
+
                         data.results.forEach(work => {
-                            totalCitations += work.cited_by_count || 0;
+                            const titleKey = work.title.toLowerCase().replace(/[^a-z0-9]/g, '');
+                            if (seenTitles.has(titleKey)) {
+                                return; // Skip duplicate article
+                            }
+                            seenTitles.add(titleKey);
 
                             const li = document.createElement('li');
                             
@@ -209,25 +214,14 @@
                             li.innerHTML = `
                                 <strong>${work.title}</strong> (${work.publication_year})<br>
                                 ${authors}<br>
-                                <em>${venue}</em> — <a href="${linkUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a> (Citations: ${work.cited_by_count || 0})
+                                <em>${venue}</em> — <a href="${linkUrl}" target="_blank" rel="noopener noreferrer">${linkText}</a>
                             `;
                             publicationsList.appendChild(li);
                         });
-
-                        // Update total citations count
-                        const citationCountSpan = document.getElementById('citation-count');
-                        if (citationCountSpan) {
-                            citationCountSpan.textContent = totalCitations;
-                        }
                     }
                 })
                 .catch(error => {
                     console.error('Error fetching dynamic publications from OpenAlex:', error);
-                    // On error, the fallback static list remains visible and we show a placeholder for citation count
-                    const citationCountSpan = document.getElementById('citation-count');
-                    if (citationCountSpan) {
-                        citationCountSpan.textContent = 'Unavailable (Offline)';
-                    }
                 });
         });
     </script>
