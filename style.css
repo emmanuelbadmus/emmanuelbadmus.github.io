@@ -1,6 +1,6 @@
 /* 
    Emmanuel Badmus - Personal Website Style Sheet
-   A clean, minimalist, high-performance stylesheet.
+   Single-screen tabbed interface.
    Uses system font stacks and respects system prefers-color-scheme.
 */
 
@@ -10,7 +10,7 @@
     --link-color: #2563eb;
     --link-hover: #1d4ed8;
     --border-color: #e5e7eb;
-    --max-width: 650px;
+    --tab-hover-bg: #f9fafb;
     --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji";
 }
 
@@ -21,6 +21,7 @@
         --link-color: #60a5fa;
         --link-hover: #93c5fd;
         --border-color: #334155;
+        --tab-hover-bg: #1e293b;
     }
 }
 
@@ -32,87 +33,192 @@ body {
     background-color: var(--bg-color);
     color: var(--text-color);
     font-family: var(--font-family);
-    line-height: 1.6;
+    line-height: 1.5;
     margin: 0;
     padding: 0;
-}
-
-main {
-    max-width: var(--max-width);
-    margin: 0 auto;
-    padding: 0 1.5rem 2rem 1.5rem;
-}
-
-.site-header {
-    border-bottom: 1px solid var(--border-color);
-    padding: 1.5rem 0;
-    margin-bottom: 2rem;
-}
-
-.site-header .header-container {
-    max-width: var(--max-width);
-    margin: 0 auto;
-    padding: 0 1.5rem;
     display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    overflow: hidden; /* Prevent body scrolling on desktop */
+}
+
+/* Card Container layout */
+.card-container {
+    width: 900px;
+    height: 600px;
+    max-width: 95%;
+    max-height: 90vh;
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    display: flex;
+    overflow: hidden;
+    background-color: var(--bg-color);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+}
+
+/* Left Sidebar styling */
+.sidebar {
+    width: 300px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--border-color);
+    padding: 2rem 1.5rem;
+    display: flex;
+    flex-direction: column;
     justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    overflow-y: auto;
 }
 
-.site-title {
-    font-size: 1.25rem;
-    font-weight: 700;
-    letter-spacing: -0.025em;
-    color: var(--text-color);
-}
-
-.site-title:hover {
-    text-decoration: none;
-}
-
-.site-nav {
+.sidebar-header {
     display: flex;
-    align-items: center;
+    flex-direction: column;
+    align-items: flex-start;
 }
 
-.site-nav .trigger {
-    display: flex;
-    gap: 1.25rem;
-    flex-wrap: wrap;
+.profile-pic {
+    width: 140px;
+    height: 180px;
+    object-fit: cover;
+    border-radius: 4px;
+    border: 1px solid var(--border-color);
+    margin-bottom: 1.25rem;
 }
 
-.page-link {
-    font-size: 0.95rem;
-    font-weight: 500;
-    color: var(--text-color);
-    text-decoration: none;
-}
-
-.page-link:hover {
-    text-decoration: underline;
-    color: var(--link-color);
-}
-
-.sub-tagline {
-    font-size: 1rem;
-    color: var(--text-color);
-    opacity: 0.85;
-    margin: 0 0 1.5rem 0;
-    line-height: 1.4;
-}
-
-h2 {
+.name {
     font-size: 1.4rem;
-    margin: 2rem 0 1rem 0;
-    font-weight: 600;
+    font-weight: 700;
+    margin: 0 0 0.25rem 0;
     letter-spacing: -0.02em;
+}
+
+.title-tagline {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin: 0 0 0.5rem 0;
+    opacity: 0.9;
+}
+
+.institution {
+    font-size: 0.85rem;
+    margin: 0 0 0.25rem 0;
+    opacity: 0.8;
+}
+
+.advisor {
+    font-size: 0.85rem;
+    margin: 0;
+    opacity: 0.8;
+}
+
+.contact-list {
+    list-style-type: none;
+    padding-left: 0;
+    margin: 2rem 0 0 0;
+    border-top: 1px solid var(--border-color);
+    padding-top: 1.25rem;
+}
+
+.contact-list li {
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+}
+
+.contact-list li:last-child {
+    margin-bottom: 0;
+}
+
+/* Right Content Area layout */
+.content-area {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+}
+
+/* Navigation tabs */
+.tab-nav {
+    display: flex;
     border-bottom: 1px solid var(--border-color);
-    padding-bottom: 0.3rem;
+    background-color: var(--bg-color);
+}
+
+.tab-link {
+    flex: 1;
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 1.25rem 1rem;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: var(--text-color);
+    cursor: pointer;
+    opacity: 0.6;
+    transition: opacity 0.15s, border-color 0.15s, background-color 0.15s;
+    text-align: center;
+}
+
+.tab-link:hover {
+    opacity: 0.85;
+    background-color: var(--tab-hover-bg);
+}
+
+.tab-link.active {
+    opacity: 1;
+    border-bottom: 2px solid var(--link-color);
+}
+
+/* Tab Panels container and scrolling */
+.tab-content-container {
+    flex: 1;
+    overflow-y: auto; /* Allow scroll inside this container only */
+    padding: 2rem 2.25rem;
+}
+
+.tab-panel {
+    display: none;
+}
+
+.tab-panel.active {
+    display: block;
+}
+
+/* Scrollbar styles for panels */
+.tab-content-container::-webkit-scrollbar,
+.sidebar::-webkit-scrollbar {
+    width: 6px;
+}
+
+.tab-content-container::-webkit-scrollbar-track,
+.sidebar::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.tab-content-container::-webkit-scrollbar-thumb,
+.sidebar::-webkit-scrollbar-thumb {
+    background-color: var(--border-color);
+    border-radius: 3px;
+}
+
+/* Content typography inside tabs */
+h2 {
+    font-size: 1.35rem;
+    font-weight: 600;
+    margin-top: 0;
+    margin-bottom: 1.25rem;
+    letter-spacing: -0.01em;
+}
+
+h3 {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin-top: 1.5rem;
+    margin-bottom: 0.75rem;
 }
 
 p {
-    margin: 0 0 1.2rem 0;
+    margin: 0 0 1.25rem 0;
+    font-size: 0.95rem;
+    opacity: 0.9;
 }
 
 a {
@@ -127,70 +233,86 @@ a:hover {
 }
 
 ul {
-    padding-left: 1.2rem;
+    padding-left: 1.25rem;
     margin: 0 0 1.5rem 0;
 }
 
 li {
     margin-bottom: 0.6rem;
+    font-size: 0.95rem;
 }
 
-.project-list {
+/* Timeline specific styles */
+#experience ul {
     list-style-type: none;
     padding-left: 0;
 }
 
-.project-list li {
-    margin-bottom: 1rem;
+#experience li {
+    margin-bottom: 1.25rem;
+    position: relative;
 }
 
-.project-desc {
-    opacity: 0.8;
-}
-
-.placeholder-link {
-    color: var(--text-color);
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.placeholder-link:hover {
-    text-decoration: none;
-}
-
-.contact-links {
-    list-style-type: square;
-}
-
-footer {
-    max-width: var(--max-width);
-    margin: 4rem auto 0 auto;
-    border-top: 1px solid var(--border-color);
-    padding: 1.5rem 1.5rem 2rem 1.5rem;
-    font-size: 0.85rem;
-    opacity: 0.6;
-    text-align: center;
-}
-
-.about-content {
-    overflow: hidden;
-}
-
-.profile-pic {
-    width: 200px;
-    height: auto;
-    border-radius: 4px;
-    border: 1px solid var(--border-color);
-    margin: 0px 25px 15px 0px;
-    float: left;
-}
-
-@media (max-width: 500px) {
-    .profile-pic {
-        width: 100%;
-        max-width: 250px;
-        float: none;
-        margin: 0 auto 1.5rem auto;
+/* Responsive Stacking Layout on Tablets / Mobile */
+@media (max-width: 768px) {
+    body {
+        overflow: auto;
+        height: auto;
+        padding: 1.5rem 1rem;
         display: block;
+    }
+
+    .card-container {
+        flex-direction: column;
+        height: auto;
+        max-height: none;
+        width: 100%;
+        max-width: 100%;
+    }
+
+    .sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid var(--border-color);
+        padding: 1.5rem;
+        align-items: center;
+        text-align: center;
+    }
+
+    .sidebar-header {
+        align-items: center;
+    }
+
+    .profile-pic {
+        width: 120px;
+        height: 150px;
+    }
+
+    .contact-list {
+        width: 100%;
+        margin-top: 1.25rem;
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 1rem;
+        padding-top: 1rem;
+    }
+
+    .contact-list li {
+        margin-bottom: 0;
+    }
+
+    .tab-nav {
+        flex-wrap: wrap;
+    }
+
+    .tab-link {
+        padding: 1rem 0.5rem;
+        font-size: 0.85rem;
+    }
+
+    .tab-content-container {
+        overflow-y: visible;
+        padding: 1.5rem;
     }
 }
