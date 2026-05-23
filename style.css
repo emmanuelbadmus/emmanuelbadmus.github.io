@@ -137,3 +137,14 @@ footer {
     opacity: 0.6;
     text-align: center;
 }
+
+.profile-pic-container {
+    margin-bottom: 1.5rem;
+}
+
+.profile-pic {
+    max-width: 150px;
+    border-radius: 50%;
+    border: 2px solid var(--border-color);
+    display: block;
+}
