@@ -346,9 +346,9 @@ li {
 
 /* NLR logo emoji style */
 .nlr-logo-emoji {
-    height: 1.1em;
-    width: 1.823em; /* maintains the logo's 116:70 aspect ratio (1.657 * 1.1 = 1.823) */
-    vertical-align: -0.15em;
+    height: 0.85em;
+    width: 1.41em; /* maintains the logo's 116:70 aspect ratio (1.657 * 0.85 = 1.408) */
+    vertical-align: -0.08em;
     margin-left: 0.2rem;
     margin-right: 0.1rem;
     display: inline-block;
