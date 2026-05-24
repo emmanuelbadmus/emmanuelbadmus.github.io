@@ -354,3 +354,13 @@ li {
     display: inline-block;
 }
 
+/* arXiv logo emoji style */
+.arxiv-logo-emoji {
+    height: 0.75em;
+    width: 1.67em; /* maintains the logo's 246.978:111.119 aspect ratio (2.222 * 0.75 = 1.666) */
+    vertical-align: -0.05em;
+    margin-left: 0.2rem;
+    margin-right: 0.1rem;
+    display: inline-block;
+}
+
