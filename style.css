@@ -92,6 +92,7 @@ body {
     border-radius: 4px;
     border: 1px solid var(--border-color);
     margin-bottom: 1.25rem;
+    align-self: center; /* Centralize the image in the sidebar flex container */
 }
 
 .name {
@@ -135,6 +136,11 @@ body {
 
 .contact-list li:last-child {
     margin-bottom: 0;
+}
+
+.contact-list a {
+    font-weight: 600;
+    font-size: 0.95rem;
 }
 
 /* Right Content Area layout */
