@@ -364,3 +364,23 @@ li {
     display: inline-block;
 }
 
+/* CDC logo emoji style */
+.cdc-logo-emoji {
+    height: 0.85em;
+    width: 2.64em; /* maintains the logo's 310:100 aspect ratio (3.1 * 0.85 = 2.635) */
+    vertical-align: -0.08em;
+    margin-left: 0.2rem;
+    margin-right: 0.1rem;
+    display: inline-block;
+}
+
+/* PAWATANK logo emoji style */
+.pawatank-logo-emoji {
+    height: 0.85em;
+    width: 3.4em; /* maintains the logo's 240:60 aspect ratio (4 * 0.85 = 3.4) */
+    vertical-align: -0.08em;
+    margin-left: 0.2rem;
+    margin-right: 0.1rem;
+    display: inline-block;
+}
+
