@@ -337,7 +337,7 @@ li {
 /* Custom logo emoji style */
 .uvm-logo-emoji {
     height: 1.1em;
-    width: auto;
+    width: 1.036em; /* maintains the shield's 41.4:44 aspect ratio */
     vertical-align: -0.15em;
     margin-left: 0.2rem;
     margin-right: 0.1rem;
