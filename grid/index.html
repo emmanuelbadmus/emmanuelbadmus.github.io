@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>ACTIVSg500 Power Flow Network Explorer</title>
   <style>
     * {
@@ -94,15 +94,24 @@
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 0 14px;
+      padding: 0 12px;
       z-index: 30;
       flex-shrink: 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
       transition: background-color 0.15s, border-color 0.15s;
+    }
+    .cad-toolbar::-webkit-scrollbar {
+      display: none;
     }
     .toolbar-left, .toolbar-center, .toolbar-right {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      flex-shrink: 0;
     }
     .brand-title {
       font-size: 12px;
@@ -290,6 +299,8 @@
       height: 100%;
       background-color: var(--bg-canvas);
       cursor: grab;
+      touch-action: none;
+      -webkit-touch-callout: none;
     }
     #viewport:active {
       cursor: grabbing;
@@ -298,6 +309,8 @@
       display: block;
       width: 100%;
       height: 100%;
+      touch-action: none;
+      user-select: none;
     }
 
     /* CAD Panels */
@@ -446,6 +459,122 @@
       margin-right: 8px;
       flex-shrink: 0;
     }
+
+    /* Desktop Default Card Widths */
+    #legend-card, #outage-bar-card {
+      width: 380px;
+    }
+    #telemetry-card {
+      width: 300px;
+    }
+
+    /* Mobile Quick-Action Dock & Responsive Layout */
+    .mobile-only-dock {
+      display: none;
+    }
+    .panel-close-btn {
+      display: none;
+    }
+
+    @media (max-width: 768px) {
+      .cad-toolbar {
+        height: 38px;
+        padding: 0 6px;
+        gap: 6px;
+      }
+      .brand-title {
+        font-size: 11px;
+      }
+      .status-tag {
+        font-size: 9px;
+        padding: 1px 4px;
+      }
+      .seg-item {
+        padding: 3px 5px;
+        font-size: 9.5px;
+      }
+      .cad-btn {
+        padding: 3px 5px;
+        font-size: 9.5px;
+      }
+      .search-field {
+        width: 60px;
+        font-size: 9.5px;
+        padding: 2px 4px;
+      }
+      .nav-tools {
+        top: 6px;
+        right: 6px;
+        gap: 2px;
+      }
+      .nav-btn {
+        width: 32px;
+        height: 32px;
+        font-size: 14px;
+      }
+
+      /* Floating Mobile Dock Capsule */
+      .mobile-only-dock {
+        display: flex;
+        align-items: center;
+        position: absolute;
+        bottom: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 28;
+        gap: 6px;
+        background: var(--bg-toolbar);
+        border: 1px solid var(--border-toolbar);
+        border-radius: 20px;
+        padding: 3px 6px;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
+      }
+      .mobile-only-dock .cad-btn {
+        border-radius: 12px;
+        padding: 4px 8px;
+        font-size: 10.5px;
+      }
+
+      /* Mobile Bottom Sheet Overlays */
+      #panel-legend-container, #panel-telemetry-container {
+        display: none !important;
+      }
+      #panel-legend-container.mobile-visible, #panel-telemetry-container.mobile-visible {
+        display: flex !important;
+        position: absolute !important;
+        bottom: 50px !important;
+        left: 8px !important;
+        right: 8px !important;
+        width: calc(100vw - 16px) !important;
+        max-width: calc(100vw - 16px) !important;
+        z-index: 35 !important;
+      }
+      #legend-card, #telemetry-card, #outage-bar-card {
+        width: 100% !important;
+      }
+      #legend-body {
+        max-height: 42vh !important;
+        overflow-y: auto !important;
+      }
+      #telemetry-body {
+        max-height: 42vh !important;
+        overflow-y: auto !important;
+      }
+      .panel-close-btn {
+        display: inline-flex !important;
+        width: 20px;
+        height: 20px;
+        align-items: center;
+        justify-content: center;
+        border-radius: 3px;
+        border: 1px solid var(--border-btn);
+        background: var(--bg-btn);
+        color: var(--text-btn);
+        font-size: 11px;
+        cursor: pointer;
+        padding: 0;
+      }
+    }
   </style>
 </head>
 <body class="theme-light">
@@ -548,14 +677,17 @@
     </div>
 
     <!-- Bottom Left: CAD Network Legend -->
-    <div style="position: absolute; bottom: 12px; left: 12px; z-index: 20; display: flex; flex-direction: column; gap: 8px;">
+    <div id="panel-legend-container" style="position: absolute; bottom: 12px; left: 12px; z-index: 20; display: flex; flex-direction: column; gap: 8px;">
       
-      <div class="cad-card" style="width: 380px;">
+      <div id="legend-card" class="cad-card">
         <div class="card-header mono">
           <span>System Architecture & Legend</span>
-          <span style="font-size: 9px; color: var(--text-muted);">500 B · 597 L</span>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span style="font-size: 9px; color: var(--text-muted);">500 B · 597 L</span>
+            <button onclick="toggleLegendMobile()" class="panel-close-btn" title="Close Legend">✕</button>
+          </div>
         </div>
-        <div class="card-body">
+        <div id="legend-body" class="card-body">
           
           <!-- Voltage Classes -->
           <div style="margin-bottom: 9px; padding-bottom: 9px; border-bottom: 1px solid var(--divider);">
@@ -608,7 +740,7 @@
       </div>
 
       <!-- Outage Counter Status Bar -->
-      <div class="cad-card" style="width: 380px; padding: 6px 12px; display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
+      <div id="outage-bar-card" class="cad-card" style="padding: 6px 12px; display: flex; align-items: center; justify-content: space-between; font-size: 11px;">
         <div style="display:flex; align-items:center; gap:8px;" class="mono">
           <span style="color:var(--text-muted);">Tripped Lines:</span>
           <strong id="tripped-count" style="color:var(--text-main);">0</strong>
@@ -622,21 +754,31 @@
     </div>
 
     <!-- Bottom Right: Technical Telemetry Drawer -->
-    <div style="position: absolute; bottom: 12px; right: 12px; z-index: 20;">
-      <div class="cad-card" style="width: 300px;">
+    <div id="panel-telemetry-container" style="position: absolute; bottom: 12px; right: 12px; z-index: 20;">
+      <div id="telemetry-card" class="cad-card">
         <div class="card-header mono">
-          <span id="telemetry-title">System Telemetry</span>
-          <span id="telemetry-badge" style="color:var(--tag-text); font-size:9.5px;">ONLINE</span>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <span id="telemetry-title">System Telemetry</span>
+            <span id="telemetry-badge" style="color:var(--tag-text); font-size:9.5px;">ONLINE</span>
+          </div>
+          <button onclick="toggleTelemetryMobile()" class="panel-close-btn" title="Close Telemetry">✕</button>
         </div>
-        <div class="card-body">
+        <div id="telemetry-body" class="card-body">
           <div id="telemetry-lines" class="mono">
             <!-- Key-value rows populated via JS -->
           </div>
           <div style="margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--divider); font-size: 10px; color: var(--text-muted); text-align: center;" class="mono">
-            Click branch to simulate N-1 trip
+            Click / tap branch to simulate N-1 trip
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Mobile Floating Quick-Action Dock (Visible only on small screens) -->
+    <div id="mobile-dock" class="mobile-only-dock">
+      <button onclick="toggleLegendMobile()" id="btn-dock-legend" class="cad-btn">📊 Legend</button>
+      <button onclick="restoreAllOutages()" id="btn-dock-restore" class="cad-btn" style="display:none; color:#f85149; font-weight:bold;">⚡ Restore (0)</button>
+      <button onclick="toggleTelemetryMobile()" id="btn-dock-telemetry" class="cad-btn">📈 Telemetry</button>
     </div>
 
   </div>
@@ -1852,16 +1994,19 @@
       const rect = viewport.getBoundingClientRect();
       width = rect.width;
       height = rect.height;
-      canvas.width = width * window.devicePixelRatio;
-      canvas.height = height * window.devicePixelRatio;
-      ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      scale = Math.min((width - 80) / 1.85, (height - 90) / 1.85);
+      const paddingX = (width <= 768) ? 24 : 80;
+      const paddingY = (height <= 768) ? 36 : 90;
+      scale = Math.min((width - paddingX) / 1.85, (height - paddingY) / 1.85);
       initialScale = scale;
-      scaleMin = initialScale * 0.6;
+      scaleMin = initialScale * 0.5;
       scaleMax = initialScale * 40.0;
       panX = width / 2;
-      panY = height / 2 + 5;
+      panY = height / 2 + ((height <= 768) ? -12 : 5);
       render();
     }
 
@@ -2387,6 +2532,166 @@
       }
     });
 
+    // Multi-Touch Gestures (Mobile & Tablet: 1-finger pan, 2-finger pinch-zoom, tap)
+    let touchStartDist = 0;
+    let touchStartScale = 1;
+    let touchStartMidX = 0;
+    let touchStartMidY = 0;
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let touchDragDist = 0;
+    let isTouching = false;
+
+    viewport.addEventListener('touchstart', e => {
+      if (e.touches.length === 1) {
+        isTouching = true;
+        const t = e.touches[0];
+        touchStartX = t.clientX;
+        touchStartY = t.clientY;
+        startX = t.clientX - panX;
+        startY = t.clientY - panY;
+        touchDragDist = 0;
+      } else if (e.touches.length === 2) {
+        isTouching = false;
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        touchStartDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        touchStartScale = scale;
+        const rect = canvas.getBoundingClientRect();
+        touchStartMidX = (t1.clientX + t2.clientX) / 2 - rect.left;
+        touchStartMidY = (t1.clientY + t2.clientY) / 2 - rect.top;
+      }
+    }, { passive: false });
+
+    viewport.addEventListener('touchmove', e => {
+      e.preventDefault();
+      if (e.touches.length === 1 && isTouching) {
+        const t = e.touches[0];
+        const dx = t.clientX - touchStartX;
+        const dy = t.clientY - touchStartY;
+        touchDragDist += Math.hypot(dx, dy);
+        touchStartX = t.clientX;
+        touchStartY = t.clientY;
+        panX = t.clientX - startX;
+        panY = t.clientY - startY;
+        render();
+      } else if (e.touches.length === 2 && touchStartDist > 0) {
+        const t1 = e.touches[0];
+        const t2 = e.touches[1];
+        const curDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+        const factor = curDist / touchStartDist;
+        const newScale = Math.max(scaleMin, Math.min(scaleMax, touchStartScale * factor));
+        const actualRatio = newScale / scale;
+        panX = touchStartMidX - (touchStartMidX - panX) * actualRatio;
+        panY = touchStartMidY - (touchStartMidY - panY) * actualRatio;
+        scale = newScale;
+        render();
+      }
+    }, { passive: false });
+
+    viewport.addEventListener('touchend', e => {
+      if (e.touches.length === 0) {
+        if (isTouching && touchDragDist < 12) {
+          // Tap detected!
+          const rect = canvas.getBoundingClientRect();
+          const mx = touchStartX - rect.left;
+          const my = touchStartY - rect.top;
+          const [wx, wy] = screenToWorld(mx, my);
+
+          // Generous hit test radius for touch screens (24px for node, 14px for edge)
+          let foundNode = null;
+          let minDist = 24 / scale;
+          for (const n of nodes) {
+            const dist = Math.hypot(n.x - wx, n.y - wy);
+            if (dist < minDist) {
+              minDist = dist;
+              foundNode = n;
+            }
+          }
+
+          let foundEdge = null;
+          if (!foundNode) {
+            let minEdgeDist = 14 / scale;
+            for (const ed of edges) {
+              const u = nodeMap.get(ed.from);
+              const v = nodeMap.get(ed.to);
+              if (!u || !v) continue;
+              const d = pointToSegmentDist(wx, wy, u.x, u.y, v.x, v.y);
+              if (d < minEdgeDist) {
+                minEdgeDist = d;
+                foundEdge = ed;
+              }
+            }
+          }
+
+          hoveredNode = foundNode;
+          hoveredEdge = foundEdge;
+          updateTelemetryHUD(foundNode, foundEdge);
+
+          if (foundNode || foundEdge) {
+            if (window.innerWidth <= 768) {
+              showTelemetryMobile();
+            }
+          } else {
+            // Tapped empty canvas on mobile -> dismiss sheets
+            if (window.innerWidth <= 768) {
+              hideMobilePanels();
+            }
+          }
+
+          if (foundEdge) {
+            tripBranch(foundEdge.id);
+          } else {
+            render();
+          }
+        }
+        isTouching = false;
+        touchStartDist = 0;
+      } else if (e.touches.length === 1) {
+        const t = e.touches[0];
+        touchStartX = t.clientX;
+        touchStartY = t.clientY;
+        startX = t.clientX - panX;
+        startY = t.clientY - panY;
+        isTouching = true;
+        touchDragDist = 0;
+        touchStartDist = 0;
+      }
+    });
+
+    // Mobile Panel Visibility Controls
+    function toggleLegendMobile() {
+      const p = document.getElementById('panel-legend-container');
+      const isVis = p.classList.contains('mobile-visible');
+      if (isVis) {
+        p.classList.remove('mobile-visible');
+      } else {
+        p.classList.add('mobile-visible');
+        document.getElementById('panel-telemetry-container').classList.remove('mobile-visible');
+      }
+    }
+
+    function toggleTelemetryMobile() {
+      const p = document.getElementById('panel-telemetry-container');
+      const isVis = p.classList.contains('mobile-visible');
+      if (isVis) {
+        p.classList.remove('mobile-visible');
+      } else {
+        p.classList.add('mobile-visible');
+        document.getElementById('panel-legend-container').classList.remove('mobile-visible');
+      }
+    }
+
+    function showTelemetryMobile() {
+      document.getElementById('panel-telemetry-container').classList.add('mobile-visible');
+      document.getElementById('panel-legend-container').classList.remove('mobile-visible');
+    }
+
+    function hideMobilePanels() {
+      document.getElementById('panel-legend-container').classList.remove('mobile-visible');
+      document.getElementById('panel-telemetry-container').classList.remove('mobile-visible');
+    }
+
     function tripBranch(edgeId) {
       const ed = edgeMap.get(edgeId);
       if (!ed) return;
@@ -2497,6 +2802,16 @@
           solverBadge.textContent = solveResult ? `DC-PF (LINEAR · ${solveResult.solveTimeMs}ms)` : 'SOLVER: DC-PF (LINEAR)';
           solverBadge.style.color = 'var(--text-muted)';
           solverBadge.style.borderColor = 'var(--border-control)';
+        }
+      }
+
+      const dockRestore = document.getElementById('btn-dock-restore');
+      if (dockRestore) {
+        if (trippedEdges.size > 0) {
+          dockRestore.style.display = 'inline-flex';
+          dockRestore.textContent = `⚡ Restore (${trippedEdges.size})`;
+        } else {
+          dockRestore.style.display = 'none';
         }
       }
     }
