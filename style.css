@@ -4,7 +4,7 @@
    Uses system font stacks and respects system prefers-color-scheme.
 */
 
-:root {
+:root, html.theme-light {
     --body-bg: #f3f4f6;
     --bg-color: #ffffff;
     --text-color: #1f2937;
@@ -15,16 +15,37 @@
     --font-family: "Latin Modern Roman", Georgia, "Times New Roman", Times, serif;
 }
 
-@media (prefers-color-scheme: dark) {
-    :root {
-        --body-bg: #090d16;
-        --bg-color: #111827;
-        --text-color: #f3f4f6;
-        --link-color: #4ade80;
-        --link-hover: #6ee7b7;
-        --border-color: #374151;
-        --tab-hover-bg: #1f2937;
-    }
+html.theme-dark {
+    --body-bg: #090d16;
+    --bg-color: #111827;
+    --text-color: #f3f4f6;
+    --link-color: #4ade80;
+    --link-hover: #6ee7b7;
+    --border-color: #374151;
+    --tab-hover-bg: #1f2937;
+}
+
+/* Theme toggle button in sidebar */
+.theme-toggle-btn {
+    background: var(--tab-hover-bg);
+    border: 1px solid var(--border-color);
+    color: var(--text-color);
+    padding: 0.3rem 0.65rem;
+    border-radius: 5px;
+    font-size: 0.78rem;
+    font-family: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-top: 0.85rem;
+    transition: all 0.15s ease;
+}
+
+.theme-toggle-btn:hover {
+    border-color: var(--link-color);
+    background: var(--bg-color);
 }
 
 * {
@@ -450,24 +471,5 @@ li {
     .demo-btn {
         width: 100%;
     }
-}
-
-/* External tab link in navigation */
-a.tab-external-link {
-    text-decoration: none !important;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--link-color) !important;
-    font-weight: 700;
-    opacity: 0.95;
-    background-color: var(--tab-hover-bg);
-    border-left: 1px solid var(--border-color);
-}
-
-a.tab-external-link:hover {
-    opacity: 1;
-    color: var(--link-hover) !important;
-    background-color: var(--border-color);
 }
 

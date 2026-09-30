@@ -372,7 +372,7 @@
     }
   </style>
 </head>
-<body class="theme-dark">
+<body class="theme-light">
 
   <!-- Engineering Toolbar -->
   <header class="cad-toolbar">
@@ -412,10 +412,10 @@
     <!-- Toggles, Search & Theme Selector -->
     <div class="toolbar-right">
       
-      <!-- Theme Switch (Light / Dark) -->
+      <!-- Theme Switch (Light / Dark - Auto Time-Aware) -->
       <div class="seg-control">
-        <button id="btn-theme-dark" onclick="setTheme('dark')" class="seg-item active">Dark</button>
-        <button id="btn-theme-light" onclick="setTheme('light')" class="seg-item">Light</button>
+        <button id="btn-theme-dark" onclick="setTheme('dark', true)" class="seg-item">Dark</button>
+        <button id="btn-theme-light" onclick="setTheme('light', true)" class="seg-item active">Light</button>
       </div>
 
       <button id="btn-toggle-numbers" onclick="toggleNumbers()" class="cad-btn active">
@@ -558,9 +558,14 @@
 
     const canvas = document.getElementById('gridCanvas');
     const ctx = canvas.getContext('2d');
-    const viewport = document.getElementById('viewport');
-
-    let currentTheme = 'dark';
+    function getAutoTheme() {
+      const hour = new Date().getHours();
+      // Daytime (6 AM to 7 PM / 06:00 - 18:59): Light mode (default)
+      // Nighttime (7 PM to 6 AM / 19:00 - 05:59): Dark mode
+      return (hour >= 6 && hour < 19) ? 'light' : 'dark';
+    }
+    let userOverrodeTheme = false;
+    let currentTheme = getAutoTheme();
     const themes = {
       dark: {
         bg: '#12151b',
@@ -654,7 +659,8 @@
       });
     }
 
-    function setTheme(theme) {
+    function setTheme(theme, isUserManual = false) {
+      if (isUserManual) userOverrodeTheme = true;
       currentTheme = theme;
       document.body.className = 'theme-' + theme;
       document.getElementById('btn-theme-dark').classList.toggle('active', theme === 'dark');
@@ -2529,6 +2535,17 @@
       t = Math.max(0, Math.min(1, t));
       return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
     }
+
+    // Initialize theme based on local time (default Light during day, Dark at night)
+    setTheme(currentTheme, false);
+    setInterval(() => {
+      if (!userOverrodeTheme) {
+        const autoTh = getAutoTheme();
+        if (autoTh !== currentTheme) {
+          setTheme(autoTh, false);
+        }
+      }
+    }, 60000);
 
     resetCamera();
     updateLegend();
