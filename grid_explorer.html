@@ -558,6 +558,8 @@
 
     const canvas = document.getElementById('gridCanvas');
     const ctx = canvas.getContext('2d');
+    const viewport = document.getElementById('viewport');
+
     function getAutoTheme() {
       const hour = new Date().getHours();
       // Daytime (6 AM to 7 PM / 06:00 - 18:59): Light mode (default)
@@ -2536,6 +2538,12 @@
       return Math.hypot(px - (x1 + t * (x2 - x1)), py - (y1 + t * (y2 - y1)));
     }
 
+    resetCamera();
+    updateLegend();
+    const initRes = solvePowerFlow();
+    updateHeaderAndOutageBar(initRes);
+    updateTelemetryHUD(null, null);
+
     // Initialize theme based on local time (default Light during day, Dark at night)
     setTheme(currentTheme, false);
     setInterval(() => {
@@ -2547,11 +2555,6 @@
       }
     }, 60000);
 
-    resetCamera();
-    updateLegend();
-    const initRes = solvePowerFlow();
-    updateHeaderAndOutageBar(initRes);
-    updateTelemetryHUD(null, null);
     animate();
   </script>
 </body>
