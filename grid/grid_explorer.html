@@ -913,6 +913,8 @@ function fmtNum(v, d = 1) {
 function fmtMW(v) { return Math.abs(v) >= 1000 ? fmtNum(v, 0) : fmtNum(v, 1); }
 /** A size someone set (whole MW unless it has a fraction worth showing). */
 function fmtP(v) { return fmtNum(v, Math.abs(v) >= 100 || Math.abs(v - Math.round(v)) < 0.05 ? 0 : 1); }
+/** A size something fits up to: like fmtP, but never rounded up past it. */
+function fmtFit(v) { return fmtP(v >= 100 ? Math.floor(v + 1e-9) : Math.floor(v * 10 + 1e-9) / 10); }
 function fmtSigned(v, d = 1) { return (v > 0 ? '+' : v < 0 ? '−' : '±') + fmtNum(Math.abs(v), d); }
 function fmtPct(v) { return isFinite(v) ? fmtNum(v, v >= 100 ? 0 : 1) + '%' : '—'; }
 
@@ -2044,6 +2046,7 @@ const S = {
   base: null, sol: null, baseStats: null, solStats: null,
   orig: null, origStats: null,   // the intact grid as published (base is the intact grid with the new connection in)
   adds: [],             // the new connections: { uid, kind: 'load' | 'plant', bus, p (MW), pf }
+  solvePending: false,  // a big grid: the connections are set, the grid with them not solved yet
   src: 'spread',        // who makes up for them: every plant by its room ('spread'), or the balancing plant ('slack')
   sel: -1,              // uid of the connection whose size the panel shows
   addShort: 0,          // MW the other machines cannot make room for
@@ -3569,7 +3572,9 @@ function setAdds(adds, opts) {
   if (M.n <= 5000 || opts.live) { run(); return; }
   const key = S.key;
   busy(`Solving the ${S.engine === 'ac' ? 'AC' : 'DC'} power flow of ${M.n.toLocaleString('en-US')} buses`);
-  setTimeout(() => { if (S.key === key) run(); busy(null); }, 40);
+  // until then the solution is the one without these connections: the checks wait for it (S.solvePending)
+  S.solvePending = true;
+  setTimeout(() => { S.solvePending = false; if (S.key === key) run(); busy(null); }, 40);
 }
 function addConnection(kind, bus) {
   S.placing = null; canvas.classList.remove('placing');
@@ -3895,7 +3900,7 @@ function setOutages(outList, tripList) {
 /** What taking `outSet` out did, against a reference solution: the largest jump in loading elsewhere, the
     largest flow shift, lines over their rating, the lowest voltage, and the load lost (cut off or shed). */
 function outcome(sol, outSet, ref) {
-  const r = { ok: sol.ok, maxLoad: 0, maxEdge: -1, nOver: 0, minV: Infinity, minVBus: -1, cut: 0, cutBuses: 0, dmax: 0, dEdge: -1, jump: 0, jEdge: -1, over: null };
+  const r = { ok: sol.ok, maxLoad: 0, maxEdge: -1, nOver: 0, minV: Infinity, minVBus: -1, cut: 0, cutBuses: 0, dmax: 0, dEdge: -1, jump: 0, jEdge: -1, over: null, near: null };
   if (!sol.ok) return r;
   for (let k = 0; k < M.m; k++) {
     if (outSet.has(k) || !sol.live[M.ef[k]] || !sol.live[M.et[k]]) continue;
@@ -3903,6 +3908,9 @@ function outcome(sol, outSet, ref) {
     if (isFinite(l)) {
       if (l > r.maxLoad) { r.maxLoad = l; r.maxEdge = k; }
       if (l > 100) { r.nOver++; (r.over = r.over || []).push([k, l]); }
+      // within WORSE_PTS of its rating: what the study needs of the grid without the connections, to tell whether
+      // they add WORSE_PTS or more to a line they take over its rating
+      if (l > 100 - WORSE_PTS) (r.near = r.near || []).push([k, l]);
     }
     const d = Math.abs(sol.pf[k]) - Math.abs(ref.pf[k]);
     if (d > r.dmax) { r.dmax = d; r.dEdge = k; }
@@ -3915,7 +3923,7 @@ function outcome(sol, outSet, ref) {
   }
   r.cut += Math.max(0, (sol.shed || 0) - (ref.shed || 0));
   r.short = sol.short || 0;
-  if (r.over) r.over = r.over.sort((a, b) => b[1] - a[1]).slice(0, 4);
+  if (r.over) r.over.sort((a, b) => b[1] - a[1]);   // every one: the study compares them all, not the worst few
   return r;
 }
 /** The outcome as tooltip lines. ref: the solution before; refOver: lines over their rating before. */
@@ -3951,6 +3959,10 @@ function schedulePreview(e) {
 
 /* ----- the N-1 scan: every branch out on its own, from the intact grid ----- */
 const scanDone = (sc) => !!sc && sc.next >= sc.cand.length;
+/** Time a connection study's outage scan may take on a big grid (ms); past it, the outages left are reported unchecked. */
+let STUDY_BUDGET = 300000;
+/** Outages a scan set out to check but ran out of time for. */
+const scanLeft = (sc) => (sc ? Math.max(0, (sc.planned || 0) - sc.cand.length) : 0);
 /** The two kinds of single outage: a branch ('line') or one machine ('unit'), with where each kind's scans live. */
 const OUTS = { line: { with: 'scan', without: 'scanOrig' }, unit: { with: 'g1', without: 'g1Orig' } };
 const NONE = new Set();
@@ -3975,6 +3987,7 @@ function hopsFromAdds() {
   return hop;
 }
 function startScan() {
+  if (S.solvePending) return;   // setAdds starts it once the grid with the connections is solved
   const ak = addsKey();
   if (S.scan && !S.scan.cancel && S.scan.engine === S.engine && S.scan.add === ak) { if (scanDone(S.scan)) { startOrigScan('line'); startCutback('line'); } return; }
   if (!S.base.ok) return;
@@ -3982,7 +3995,8 @@ function startScan() {
   // every branch on a small grid; on a big one the branches that keep it in one piece and matter most, for as long as
   // the budget allows: with new connections, those they shift the most flow onto (the study area), then the most loaded
   let cand = [...Array(M.m).keys()], area = false;
-  const budget = M.m > 1500 ? 45000 : Infinity;
+  // time allowed on a big grid: a connection study's area gets five minutes, the plain N-1 view 45 s
+  const budget = M.m > 1500 ? (S.adds.length ? STUDY_BUDGET : 45000) : Infinity;
   if (M.m > 1500) {
     const ok = (e) => !M.bridge[e] && S.base.live[M.ef[e]];
     const key = (e) => (M.rated && isFinite(S.base.load[e]) ? S.base.load[e] : Math.abs(S.base.pf[e]) / 10);
@@ -4003,6 +4017,7 @@ function startScan() {
 /** Each machine out on its own, with the new connections in (all of them on a small grid; on a big one those nearest
     the new connections, then the largest, for as long as the budget allows). */
 function startUnitScan() {
+  if (S.solvePending) return;
   const ak = addsKey(), U = M.units;
   if (S.g1 && !S.g1.cancel && S.g1.engine === S.engine && S.g1.add === ak) { if (scanDone(S.g1)) { startOrigScan('unit'); startCutback('unit'); } return; }
   if (S.g1) S.g1.cancel = true;
@@ -4018,7 +4033,7 @@ function startUnitScan() {
     cand = near.concat(cand.filter((u) => !inNear.has(u)).sort((a, b) => out(b) - out(a)).slice(0, 50));
     S.g1Area = true;
   } else S.g1Area = false;
-  S.g1 = runScan({ kind: 'unit', add: ak, cand, budget: cand.length > 150 && M.n > 5000 ? 45000 : Infinity, cs, ref: S.base });
+  S.g1 = runScan({ kind: 'unit', add: ak, cand, budget: cand.length > 150 && M.n > 5000 ? STUDY_BUDGET : Infinity, cs, ref: S.base });
 }
 /** With new connections in, the same outages solved without them, to see which problems they cause. */
 function startOrigScan(kind) {
@@ -4035,20 +4050,21 @@ function startOrigScan(kind) {
 function runScan(o) {
   const kind = o.kind || 'line', slot = OUTS[kind][o.orig ? 'without' : 'with'];
   const scan = { kind, engine: S.engine, key: S.key, add: o.add, res: new Array(kind === 'unit' ? M.units.n : M.m).fill(null), cand: o.cand, budget: o.budget,
-    done: 0, next: 0, cancel: false, t0: performance.now(), cs: o.cs, ref: o.ref, orig: !!o.orig };
+    done: 0, next: 0, cancel: false, t0: performance.now(), cs: o.cs, ref: o.ref, orig: !!o.orig, planned: o.cand.length };
   const mine = () => S[slot] === scan;
   const step = () => {
     if (scan.cancel || !mine()) return;
     const until = performance.now() + 10;   // short slices keep the map at 60 frames a second
-    if (performance.now() - scan.t0 > scan.budget) scan.cand = scan.cand.slice(0, scan.next);
+    if (performance.now() - scan.t0 > scan.budget && scan.next < scan.cand.length) scan.cand = scan.cand.slice(0, scan.next);
     withCase(scan.cs, () => {
       while (scan.next < scan.cand.length && performance.now() < until) {
         const x = scan.cand[scan.next++];
         const sol = solveOut(kind, x, scan.ref);
         const r = outcome(sol, outOf(kind, x), scan.ref);
-        // without the connection: how loaded the lines were that it overloads, under the same outage
+        // without the connection: how loaded the lines were that it overloads, under the same outage, by line (this
+        // scan is kept when the connections change size, and the lines they overload change with it)
         const c = o.cmp && o.cmp.res[x];
-        if (c && c.over && sol.ok) r.at = c.over.map(([k]) => sol.load[k]);
+        if (c && c.over && sol.ok) r.at = new Map(c.over.map(([k]) => [k, sol.load[k]]));
         scan.res[x] = r;
         scan.done++;
       }
@@ -4673,20 +4689,63 @@ function findLimit() {
   L.ref = others.length ? at(0, S.base.ok ? S.base : S.orig) : S.orig;
   if (!L.ref.ok) { L.status = 'noref'; renderAdd(); return; }
   let k = 0, warm = L.ref, last = L.ref;   // on a small grid each step keeps its solution, to warm-start the refinement
+  const below = {};   // on a big grid, the solution one step below where each test is first hit
   const live = () => !L.cancel && S.limit === L && S.key === L.key;
   // a threshold between two steps: halve the gap a few times (a small grid), or read it off a straight line between them
   const refine = (test, j) => {
     const lo = L.pts[j - 1], hi = L.pts[j];
     if (!small) {
       const f = test.key === 'over' ? (100 - lo.over) / (hi.over - lo.over) : test.key === 'low' ? (lo.low - 0.95) / (lo.low - hi.low) : (1.05 - lo.high) / (hi.high - lo.high);
-      return { p: lo.p + clamp(isFinite(f) ? f : 1, 0, 1) * (hi.p - lo.p), at: test.at(hi, L), exact: false };
+      return { p: lo.p + clamp(isFinite(f) ? f : 1, 0, 1) * (hi.p - lo.p), at: test.at(hi, L), exact: false, lo, hi };
     }
     let a0 = lo.p, b0 = hi.p, w = lo.sol || L.ref, rb = hi;
     for (let it = 0; it < 7; it++) {
       const mid = (a0 + b0) / 2, sol = at(mid, w), r = limitPoint(L, mid, sol);
       if (!sol.ok || test.hit(r)) { b0 = mid; if (sol.ok) rb = r; } else { a0 = mid; w = sol; }
     }
-    return { p: a0, at: test.at(rb, L), exact: true };
+    return { p: a0, at: test.at(rb, L), exact: true, gap: b0 - a0 };
+  };
+  // On a big grid each threshold read off a straight line that could set the size (the step below it is under the
+  // smallest found) is then pinned down by solving: false position inside what is left, the end that has stayed put
+  // twice counting half (so a kink, where another line takes over, does not stall it), until a size that passes and one
+  // that fails are under 0.2% of it apart (at least 0.25 MW). The size that passes is the one given.
+  let pin = null;   // { t, a, b, fa, fb, at, w, last, it, gap }
+  const nextPin = () => {
+    const m = Math.min(...Object.values(L.th).map((x) => x.p));
+    let bk = null;
+    for (const kv of Object.entries(L.th)) if (kv[1].exact === false && kv[1].lo.p < m && (!bk || kv[1].p < bk[1].p)) bk = kv;
+    return bk;
+  };
+  const past = (t, r) => (t.key === 'over' ? r.over - 100 : t.key === 'low' ? 0.95 - r.low : r.high - 1.05);   // > 0: hit
+  const pinStep = () => {
+    if (!live()) return;
+    const until = performance.now() + 14;
+    while (performance.now() < until) {
+      if (!pin) {
+        const bk = nextPin();
+        if (!bk) { done(); return; }
+        const t = LIMIT_TESTS.find((x) => x.key === bk[0]), a = bk[1].lo, b = bk[1].hi;
+        pin = { t, a, b, fa: past(t, a), fb: b.ok ? past(t, b) : NaN, at: bk[1].at, w: below[t.key] || last, last: 0, it: 0, gap: Math.max(0.25, bk[1].p / 500) };
+      }
+      const { t, a, b, gap } = pin;
+      if (b.p - a.p <= gap || pin.it >= 12) {
+        L.th[t.key] = { p: a.p, at: b.ok ? t.at(b, L) : pin.at, exact: true, gap: b.p - a.p };
+        pin = null;
+        continue;
+      }
+      const x = clamp(pin.fb > pin.fa ? a.p + (-pin.fa / (pin.fb - pin.fa)) * (b.p - a.p) : (a.p + b.p) / 2, a.p + gap * 0.2, b.p - gap * 0.2);
+      const sol = at(x, pin.w), r = limitPoint(L, x, sol);
+      pin.it++;
+      if (!sol.ok || t.hit(r)) { pin.b = r; pin.fb = sol.ok ? past(t, r) : NaN; if (pin.last < 0) pin.fa /= 2; pin.last = -1; }
+      else { pin.a = r; pin.fa = past(t, r); pin.w = sol; if (pin.last > 0) pin.fb /= 2; pin.last = 1; }
+    }
+    setTimeout(pinStep, 0);
+  };
+  const done = () => {
+    L.fits = Math.min(L.top, ...Object.values(L.th).map((t) => t.p));
+    L.status = 'done';
+    L.ms = performance.now() - L.t0;
+    if (live()) renderAdd();
   };
   const finish = () => {
     if (L.fail != null) {
@@ -4707,9 +4766,8 @@ function findLimit() {
       if (j > 0 && L.pts[j - 1].ok) L.th[t.key] = refine(t, j);
       else if (j === 0) L.th[t.key] = { p: 0, at: t.at(L.pts[0], L), exact: true };
     }
-    L.fits = Math.min(L.top, ...Object.values(L.th).map((t) => t.p));
-    L.status = 'done';
-    L.ms = performance.now() - L.t0;
+    if (small) done();
+    else { renderAdd(); setTimeout(pinStep, 0); }
   };
   const step = () => {
     if (!live()) return;
@@ -4719,6 +4777,7 @@ function findLimit() {
       const p = (top * k) / N, sol = at(p, warm), pt = limitPoint(L, p, sol);
       L.pts.push(pt);
       if (!sol.ok) { L.fail = p; break; }
+      if (!small) for (const t of LIMIT_TESTS) if (!below[t.key] && t.hit(pt)) below[t.key] = warm;
       warm = last = sol;
       if (small) pt.sol = sol;
     }
@@ -4727,7 +4786,6 @@ function findLimit() {
     if (small) p0.sol = L.ref;
     L.pts.unshift(p0);
     finish();
-    if (live()) renderAdd();
   };
   renderAdd();
   setTimeout(step, 30);
@@ -4739,7 +4797,7 @@ function limitBlock() {
   const tip = info(`Its size stepped from zero to the room the other plants have${S.adds.length > 1 ? ', the others as they are' : ''}, solving at each step: the first line over its rating (one already over counts once it is ${WORSE_PTS}% further over), the first bus it moves ${WORSE_PU} pu or more to outside 0.95-1.05 pu, and the size past which there is no answer (the voltage collapses). Every line in service.`);
   if (L.status === 'noref') return `<div class="limit"><div class="lim-head"><b>${title}</b></div><div class="muted">No answer with the others in, even without this one.</div></div>`;
   if (L.status === 'running') {
-    const pct = Math.round((L.pts.length / L.N) * 100);
+    const pct = Math.min(99, Math.round((L.pts.length / L.N) * 100));
     return `<div class="limit"><div class="lim-head"><b>${title}</b><span class="muted num">${pct}%</span></div><div class="progress"><div style="width:${pct}%"></div></div></div>`;
   }
   const rows = [];
@@ -4751,8 +4809,8 @@ function limitBlock() {
   return `<div class="limit">
     <div class="lim-head"><span class="h-with-info"><b>${title}</b>${tip}</span><span class="muted num">${fmtNum((L.ms || 0) / 1000, 1)} s</span></div>
     ${limitChart(L, a)}
-    <div class="lim-rows">${rows.map(([p, what, at, exact]) => `<div class="t-row${p === first ? ' first' : ''}"><span>${what}${at ? `<span class="i-sub">${esc(at)}</span>` : ''}</span><b class="num">${exact ? '' : '~'}${fmtP(p)} MW</b></div>`).join('')}</div>
-    <div class="lim-foot"><span>Fits up to <b class="num">${fmtP(first)} MW</b>, all lines in</span>${first >= 1 && Math.abs(first - a.p) > 0.5 ? `<button class="btn sm" id="btnLimitSet" data-p="${Math.floor(first)}">Set ${fmtP(Math.floor(first))} MW</button>` : ''}</div>
+    <div class="lim-rows">${rows.map(([p, what, at, exact]) => `<div class="t-row${p === first ? ' first' : ''}"><span>${what}${at ? `<span class="i-sub">${esc(at)}</span>` : ''}</span><b class="num">${exact ? fmtFit(p) : `~${fmtP(p)}`} MW</b></div>`).join('')}</div>
+    <div class="lim-foot"><span>Fits up to <b class="num">${fmtFit(first)} MW</b>, all lines in</span>${first >= 1 && Math.abs(first - a.p) > 0.5 ? `<button class="btn sm" id="btnLimitSet" data-p="${Math.floor(first)}">Set ${fmtP(Math.floor(first))} MW</button>` : ''}</div>
   </div>`;
 }
 /** Two small charts sharing the size axis: the voltage at the bus (AC) and the most loaded line. One measure each. */
@@ -4849,11 +4907,19 @@ function scanCompare(scan) {
     let why = '', sev = 0, lines = [], low = null;
     if (!c.ok && r.ok) { why = 'no answer'; sev = 1e4; }
     else if (c.ok && r.ok) {
-      const was = (k, j) => (r.at ? r.at[j] : ((r.over || []).find(([x]) => x === k) || [0, NaN])[1]);
+      // the line's loading without them, under the same outage: read off when this scan was run for these connections,
+      // or else looked up among the lines within WORSE_PTS of their rating; a line in neither was further below, so
+      // they add more than WORSE_PTS to it (NaN counts it)
+      const was = (k) => {
+        const x = r.at && r.at.get(k);
+        if (x !== undefined) return x;
+        const n = (r.near || []).find(([y]) => y === k);
+        return n ? n[1] : NaN;
+      };
       // over its rating under this outage with the connections adding WORSE_PTS or more, and not already as far over
       // with every line in
       const b0 = S.base.load;
-      lines = (c.over || []).map(([k, l], j) => [k, l, was(k, j)])
+      lines = (c.over || []).map(([k, l]) => [k, l, was(k)])
         .filter(([k, l, l0]) => !(l - l0 < WORSE_PTS) && (!(b0[k] > 100) || l > b0[k] + WORSE_PTS));
       if (S.engine === 'ac' && c.minV < 0.9 && !(r.minV < 0.9) && r.minV - c.minV >= WORSE_PU && !(S.baseStats.minV < 0.9)) low = [c.minVBus, c.minV, r.minV];
       if (lines.length) {
@@ -4888,7 +4954,9 @@ function startCutback(kind) {
   const scan = S[OUTS[kind].with], cmp = scan && scanCompare(scan);
   if (!cmp || cmp.running || scan.cut) return;
   const small = M.n <= 3000, adds = S.adds.map((a) => ({ ...a })), src = S.src, engine = S.engine;
-  const list = cmp.rows.slice(0, small ? Infinity : 20).map((r) => r.e);
+  // every outage made worse (the tightest need not be the most severe), most severe first; on a big grid for as long as
+  // STUDY_BUDGET allows, and the ones left are reported
+  const list = cmp.rows.map((r) => r.e);
   const cut = { list, k: 0, at: new Map(), total: cmp.rows.length, done: !list.length, t0: performance.now() };
   scan.cut = cut;
   if (cut.done) { renderScan(); return; }
@@ -4913,14 +4981,49 @@ function startCutback(kind) {
     if ((sol.short || 0) > (cur.w0.short || 0) + 0.5) return true;
     return outcome(sol, one, base).cut > cur.w0cut + 0.5;
   }, S.base);
+  // then the tightest share, finer: the outages tied at the smallest share found are halved down to FINE (the first),
+  // or tried once at the finest share found so far and halved only if they fail there (the rest). Where time runs out
+  // first, the share already found stands (it is fine, just rounded down further)
+  const FINE = adds.length === 1 ? Math.max(2 ** -12, 0.25 / Math.max(adds[0].p, 1)) : 2 ** -8;
+  const begin = (e, lo, hi) => {
+    const one = outOf(kind, e), w0 = withCase(CASE0, () => solveOut(kind, e, S.orig), S.orig);
+    return { e, lo, hi, it: 0, w0, w0minV: w0.ok ? minV(w0) : NaN, w0cut: w0.ok ? outcome(w0, one, S.orig).cut : 0 };
+  };
+  const hi = new Map();
+  let tied = null, m0 = 0, best = Infinity;
+  const fine = () => {
+    if (!tied) {
+      m0 = Math.min(...cut.at.values());
+      tied = m0 < 1 ? list.filter((e) => cut.at.get(e) === m0) : [];
+    }
+    if (!tied.length || best <= m0) return true;   // no finer share found for the first: the rest cannot change it
+    if (!cur) {
+      const e = tied[0];
+      cur = begin(e, cut.at.get(e), hi.get(e));
+      if (best < Infinity) {
+        if (!problem(e, best)) { cut.at.set(e, best); cur = null; tied.shift(); return !tied.length; }
+        cur.hi = best;
+      }
+    }
+    if (cur.hi - cur.lo > FINE) {
+      const mid = (cur.lo + cur.hi) / 2;
+      if (problem(cur.e, mid)) cur.hi = mid; else cur.lo = mid;
+      return false;
+    }
+    cut.at.set(cur.e, cur.lo); hi.set(cur.e, cur.hi);
+    best = Math.min(best, cur.lo);
+    cur = null; tied.shift();
+    return !tied.length;
+  };
   const step = () => {
     if (S[OUTS[kind].with] !== scan || scan.cancel || cut.cancel) return;
     const until = performance.now() + 12;
-    while (cut.k < list.length && performance.now() < until) {
+    let finished = false;
+    while (!finished && performance.now() < until) {
+      if (cut.k >= list.length) { finished = fine(); continue; }
       if (!cur) {
-        const e = list[cut.k], one = outOf(kind, e);
-        const w0 = withCase(CASE0, () => solveOut(kind, e, S.orig), S.orig);
-        cur = { e, lo: 0, hi: 1, it: 0, w0, w0minV: w0.ok ? minV(w0) : NaN, w0cut: w0.ok ? outcome(w0, one, S.orig).cut : 0 };
+        const e = list[cut.k];
+        cur = begin(e, 0, 1);
         if (!problem(e, 1)) { cur.lo = 1; cur.it = iters; }
       }
       if (cur.it < iters) {
@@ -4928,9 +5031,12 @@ function startCutback(kind) {
         if (problem(cur.e, mid)) cur.hi = mid; else cur.lo = mid;
         cur.it++;
       }
-      if (cur.it >= iters) { cut.at.set(cur.e, cur.lo); cur = null; cut.k++; }
+      if (cur.it >= iters) { cut.at.set(cur.e, cur.lo); hi.set(cur.e, cur.hi); cur = null; cut.k++; }
     }
-    if (cut.k < list.length) { renderScan(); setTimeout(step, 0); return; }
+    if (!finished && (small || performance.now() - cut.t0 < STUDY_BUDGET || !cut.at.size)) { renderScan(); setTimeout(step, 0); return; }
+    cut.left = list.length - cut.k;   // time ran out: these outages' sizes were not worked out
+    if (cur) cur = null;
+    cut.hi = hi;
     cut.done = true;
     cut.firm = Math.min(...cut.at.values());
     cut.ms = performance.now() - cut.t0;
@@ -4939,7 +5045,7 @@ function startCutback(kind) {
   setTimeout(step, 30);
 }
 /** A share of the sizes set: in MW for one connection, as a percentage for several. */
-const fmtShare = (f) => (S.adds.length === 1 ? `${fmtP(f * S.adds[0].p)} MW` : `${Math.round(f * 100)}%`);
+const fmtShare = (f) => (S.adds.length === 1 ? `${fmtFit(f * S.adds[0].p)} MW` : `${Math.floor(f * 100 + 1e-9)}%`);
 function compareHtml(scan) {
   const cmp = scanCompare(scan);
   if (!S.adds.length || !scanDone(scan)) return '';
@@ -4957,9 +5063,11 @@ function compareHtml(scan) {
   }).join('');
   const k1 = kpi('Made worse', String(k), ` of ${cmp.n.toLocaleString('en-US')}`, cmp.failWith > cmp.failWithout ? `${cmp.failWith - cmp.failWithout} with no answer` : unit ? 'units out one at a time' : 'single outages', k ? 'crit' : '', 'worse');
   const tightest = rows.length ? outTitle(scan.kind, rows[0].e).replace(/^(Line|Transformer) /, '') : '';
-  const k2 = !k ? kpi('Rides through all', one ? fmtP(S.adds[0].p) : '100', one ? ' MW' : '%', 'as set', '', '')
-    : cut && cut.done ? kpi('Rides through all', one ? fmtP(cut.firm * S.adds[0].p) : String(Math.round(cut.firm * 100)), one ? ' MW' : '% of size', `tightest: ${tightest}`, '', '')
-      : kpi('Rides through all', '…', '', cut ? `${Math.round((cut.k / cut.list.length) * 100)}%` : '', '', '');
+  // a scan cut short claims nothing for the outages it did not reach
+  const part = scanLeft(scan) > 0, rides = part ? 'Rides through' : 'Rides through all', of = `the ${scan.cand.length.toLocaleString('en-US')} checked`;
+  const k2 = !k ? kpi(rides, one ? fmtP(S.adds[0].p) : '100', one ? ' MW' : '%', part ? of : 'as set', '', '')
+    : cut && cut.done ? kpi(rides, one ? fmtFit(cut.firm * S.adds[0].p) : String(Math.floor(cut.firm * 100 + 1e-9)), one ? ' MW' : '% of size', part ? of : `tightest: ${tightest}`, '', '')
+      : kpi(rides, '…', '', cut ? `${Math.round((cut.k / cut.list.length) * 100)}%` : '', '', '');
   const tip = info(`Each ${unit ? 'unit tripped' : 'single outage'} solved with and without ${newName()}. It counts as made worse when a line ends over its rating and they add ${WORSE_PTS}% of the rating or more to it, a voltage under 0.90 pu is pulled down ${WORSE_PU} pu or more, more load is lost, or there is no answer (problems the grid already has with every line in are not counted again). On the right: the largest ${one ? 'size' : 'share of their sizes'} at which that outage is fine; the smallest of them rides through every one.`);
   return `<div class="compare">
     <div class="kpis">${k1}${k2}</div>
@@ -5261,7 +5369,8 @@ function outState(kind) {
   if (!scanDone(scan)) return { st: 'run', val: `${scanPct(scan)}%`, pct: scanPct(scan) / 2 };
   const cmp = scanCompare(scan);
   if (!cmp || cmp.running) return { st: 'run', val: `${50 + (cmp ? cmp.pct : 0) / 2 | 0}%`, pct: 50 + (cmp ? cmp.pct : 0) / 2 };
-  const k = cmp.rows.length, cut = scan.cut;
+  const k = cmp.rows.length, cut = scan.cut, left = scanLeft(scan);
+  if (!k && left) return { st: 'warn', val: `${cmp.n.toLocaleString('en-US')} of ${scan.planned.toLocaleString('en-US')} checked`, partial: true };
   if (!k) return { st: 'ok', val: `all ${cmp.n.toLocaleString('en-US')} fine` };
   if (!cut || !cut.done) return { st: 'bad', val: `${k} made worse`, busy: true };
   return { st: 'bad', val: `up to ${fmtShare(cut.firm)}` };
@@ -5275,8 +5384,8 @@ const CHECKS = [
       const up = upgradeFromN0();
       const st = up.lines ? 'bad' : up.volts ? 'warn' : 'ok';
       const sweep = L && a && L.uid === a.uid && L.sweep === sweepKey(a.uid) && L.engine === S.engine && L.key === S.key ? L : null;
-      if (sweep && sweep.status === 'done') return { st, val: `up to ${fmtP(sweep.fits)} MW` };
-      if (sweep && sweep.status === 'running') return { st, val: `${Math.round((sweep.pts.length / sweep.N) * 100)}%`, busy: true };
+      if (sweep && sweep.status === 'done') return { st, val: `up to ${fmtFit(sweep.fits)} MW` };
+      if (sweep && sweep.status === 'running') return { st, val: `${Math.min(99, Math.round((sweep.pts.length / sweep.N) * 100))}%`, busy: true };
       return { st, val: up.lines ? `${up.lines} over rating` : up.volts ? 'low voltage' : 'no problems' };
     },
     body: () => n0Html() },
@@ -5349,6 +5458,7 @@ function studyKick() {
 }
 function studyRun() {
   if (!S.adds.length || !S.base) return;
+  if (S.solvePending) { setTimeout(studyRun, 50); return; }   // the grid with these connections is not solved yet
   runStrength();
   findLimit();
   runTrips();
@@ -5440,11 +5550,19 @@ function renderVerdict(states) {
     el.innerHTML = `<span class="spin" aria-hidden="true"></span><span>Checking · <b class="num">${done}</b> of ${keys.length} done</span>`;
     return;
   }
-  const bad = keys.filter((k) => states[k].st === 'bad' && k !== 'up'), warn = keys.filter((k) => states[k].st === 'warn');
+  const bad = keys.filter((k) => states[k].st === 'bad' && k !== 'up'), warn = keys.filter((k) => states[k].st === 'warn' && !states[k].partial);
   const one = S.adds.length === 1 ? S.adds[0] : null;
+  // outage scans that ran out of time on a big grid: say so, and claim nothing about the outages left
+  const scans = ['line', 'unit'].map((kind) => S[OUTS[kind].with]).filter(Boolean);
+  const partial = scans.filter((sc) => scanLeft(sc) > 0)
+    .map((sc) => `${sc.kind === 'line' ? 'branch' : 'unit'} outages ${sc.cand.length.toLocaleString('en-US')} of ${sc.planned.toLocaleString('en-US')}`)
+    .concat(scans.filter((sc) => sc.cut && sc.cut.left > 0)
+      .map((sc) => `the size each ${sc.kind === 'line' ? 'branch' : 'unit'} outage made worse allows, ${(sc.cut.list.length - sc.cut.left).toLocaleString('en-US')} of ${sc.cut.list.length.toLocaleString('en-US')}`));
+  const partNote = partial.length ? `<small>Checked in the time allowed: ${partial.join(', ')}</small>` : '';
   if (!bad.length && !warn.length) {
-    el.className = 'verdict ok';
-    el.innerHTML = `${ICON_OK}<span>${one ? `Passes every check at <b class="num">${fmtP(one.p)} MW</b>` : 'Passes every check at these sizes'}</span>`;
+    el.className = `verdict ${partial.length ? 'warn' : 'ok'}`;
+    const at = one ? ` at <b class="num">${fmtP(one.p)} MW</b>` : ' at these sizes';
+    el.innerHTML = partial.length ? `${ICON_WARN}<span>No problems found${at}${partNote}</span>` : `${ICON_OK}<span>Passes every check${at}</span>`;
     return;
   }
   const firm = one ? firmSize() : null;
@@ -5454,9 +5572,9 @@ function renderVerdict(states) {
   const u = upgradesNow(), mva = u.lines.reduce((s, x) => s + x.mva, 0);
   const nv = u.volts.length, vc = [nv ? `voltage control at ${nv} bus${nv === 1 ? '' : 'es'}` : u.collapse.length ? 'voltage support' : '', u.shortOf.length ? 'more spare generation' : ''].filter(Boolean).join(' and ');
   const takes = u.lines.length ? `${u.lines.length} line upgrade${u.lines.length === 1 ? '' : 's'} (+${fmtMW(mva)} MVA)${vc ? ` and ${vc}` : ''}` : vc;
-  const sub = takes ? `<small>${one ? `${fmtP(one.p)} MW` : 'These sizes'} would take ${takes}</small>` : '';
+  const sub = (takes ? `<small>${one ? `${fmtP(one.p)} MW` : 'These sizes'} would take ${takes}</small>` : '') + partNote;
   el.innerHTML = `${bad.length ? ICON_BAD : ICON_WARN}<span>${firm != null && firm < one.p - 0.5
-    ? `Fits up to <b class="num">${fmtP(firm)} MW</b> without upgrades`
+    ? `Fits up to <b class="num">${fmtFit(firm)} MW</b> without upgrades`
     : `Needs work: ${names.slice(0, 2).join(', ')}${names.length > 2 ? '…' : ''}`}${sub}</span>${firm != null && firm >= 1 && firm < one.p - 0.5 ? `<button class="btn sm" id="btnFirmSet" data-p="${Math.floor(firm)}">Set ${fmtP(Math.floor(firm))} MW</button>` : ''}`;
   const fb = $('btnFirmSet');
   if (fb) fb.onclick = () => updateConnection(one.uid, { p: +fb.dataset.p });
@@ -5507,7 +5625,8 @@ function outHtml(kind) {
   if (!scanDone(scan)) return scanBar(`Each ${what} out, with ${newName()} in${scope ? '' : ''}`, scanPct(scan));
   const cmp = scanCompare(scan);
   if (!cmp || cmp.running) return scanBar(`The same outages without ${newName()}`, cmp ? cmp.pct : 0);
-  return compareHtml(scan) + (scope ? `<div class="muted ck-note h-with-info">Outages checked: ${scan.cand.length.toLocaleString('en-US')} ${scope}</div>` : '');
+  const left = scanLeft(scan);
+  return compareHtml(scan) + (scope || left ? `<div class="muted ck-note h-with-info">Outages checked: ${scan.cand.length.toLocaleString('en-US')}${left ? ` of ${scan.planned.toLocaleString('en-US')} (time ran out)` : ''} ${scope}</div>` : '');
 }
 function n0Html() {
   if (!S.base.ok || !S.orig.ok) return addResultHtml();
@@ -5564,12 +5683,12 @@ function reportHtml() {
   {
     const sweep = L && one && L.uid === one.uid && L.status === 'done' ? L : null;
     const first = sweep ? Object.entries(sweep.th).sort((a, b) => a[1].p - b[1].p)[0] : null;
-    detail.n0 = sweep ? `Selected connection fits up to ${fmtP(sweep.fits)} MW${first ? ` (first limit: ${first[0] === 'over' ? 'a line overload' : first[0] === 'low' ? 'a voltage under 0.95 pu' : first[0] === 'high' ? 'a voltage over 1.05 pu' : 'voltage collapse'}${first[1].at ? `, ${e(first[1].at)}` : ''})` : ''}.` : '';
+    detail.n0 = sweep ? `Selected connection fits up to ${fmtFit(sweep.fits)} MW${first ? ` (first limit: ${first[0] === 'over' ? 'a line overload' : first[0] === 'low' ? 'a voltage under 0.95 pu' : first[0] === 'high' ? 'a voltage over 1.05 pu' : 'voltage collapse'}${first[1].at ? `, ${e(first[1].at)}` : ''})` : ''}.` : '';
     for (const kind of ['line', 'unit']) {
       const scan = S[OUTS[kind].with], cmp = scan && scanCompare(scan);
       if (!cmp || cmp.running) continue;
       const cut = scan.cut;
-      detail[kind === 'line' ? 'n1' : 'g1'] = `${cmp.rows.length} of ${cmp.n.toLocaleString('en-US')} ${kind === 'line' ? 'single branch outages' : 'unit outages'} made worse${cmp.rows.length && cut && cut.done ? `; every one is fine up to ${fmtShare(cut.firm)}` : ''}${(kind === 'line' ? scan.area : S.g1Area) ? ` (outages near the new connections and the most ${kind === 'line' ? 'loaded' : 'output'} on this grid size)` : ''}.`;
+      detail[kind === 'line' ? 'n1' : 'g1'] = `${cmp.rows.length} of ${cmp.n.toLocaleString('en-US')} ${kind === 'line' ? 'single branch outages' : 'unit outages'} made worse${cmp.rows.length && cut && cut.done ? `; ${cut.left ? `the ${(cut.list.length - cut.left).toLocaleString('en-US')} worked out in the time allowed are` : 'every one is'} fine up to ${fmtShare(cut.firm)}` : ''}${(kind === 'line' ? scan.area : S.g1Area) ? ` (outages near the new connections and the most ${kind === 'line' ? 'loaded' : 'output'} on this grid size)` : ''}.${scanLeft(scan) ? ` Time ran out before the other ${scanLeft(scan).toLocaleString('en-US')} of the ${scan.planned.toLocaleString('en-US')} planned were checked.` : ''}`;
     }
     if (S.trip && S.trip.done) detail.trip = S.trip.list.map((a) => {
       const r = S.trip.res.get(a.uid);
@@ -5665,7 +5784,7 @@ function startRoom() {
   if (ROOM.res) ROOM.res.cancel = true;
   ROOM.key = key;
   const sol = S.base;
-  const res = { kind, cancel: false, done: 0, cand: [], room: new Float32Array(M.n).fill(NaN), why: new Int32Array(M.n).fill(0), exact: new Map(), checking: new Map(),
+  const res = { kind, cancel: false, done: 0, cand: [], room: new Float32Array(M.n).fill(NaN), why: new Int32Array(M.n).fill(0), exact: new Map(), exactWhy: new Map(), checking: new Map(),
     adds: S.adds.slice(), src: S.src, ref: S.base, t0: performance.now() };
   ROOM.res = res;
   if (S.engine !== 'ac' || !sol || !sol.ok) { res.err = S.engine !== 'ac' ? 'ac' : 'none'; renderRoom(); return; }
@@ -5811,26 +5930,31 @@ async function roomCheckRun(res, i) {
   const live = () => !res.cancel && ROOM.res === res;
   const test = (p, warm) => {
     const { c, short } = caseWith(res.adds.concat([{ uid: -1, kind, bus: i, p, pf: 0.98 }]), res.src);
-    if (short > 0.5) return { bad: true };
+    if (short > 0.5) return { bad: true, why: kind === 'load' ? 'the plants run out of room' : 'the plants reach their minimum' };
     S.solves++;
     const sol = withCase(c, () => solveAC(NONE, warm), S.orig);
-    if (!sol.ok) return { bad: true };
+    if (!sol.ok) return { bad: true, why: 'the voltage collapses past this' };
     const r = limitPoint(L, p, sol);
-    return { bad: r.over > 100 || r.low < 0.95 || r.high > 1.05, sol };
+    // what stops it, in the order the size sweep reports them
+    const why = r.over > 100 ? `${edgeTitle(r.overEdge)} ${L.ref.load[r.overEdge] > 100 ? `goes ${WORSE_PTS}% further over` : 'reaches'} its rating` : r.low < 0.95 ? `bus ${M.ids[r.lowBus]} falls below 0.95 pu`
+      : r.high > 1.05 ? `bus ${M.ids[r.highBus]} rises above 1.05 pu` : '';
+    return { bad: !!why, sol, why };
   };
   const maxP = Math.max(0, maxSize({ kind, bus: i }, res.adds));
   let lo = 0, hi = Math.min(maxP, Math.max(1, res.room[i] * 1.25)), w = res.ref;
   let t = test(hi, w);
   await tick(); if (!live()) return false;
   while (!t.bad && hi < maxP - 0.5) { lo = hi; w = t.sol; hi = Math.min(maxP, hi * 1.5); t = test(hi, w); await tick(); if (!live()) return false; }
+  let why = t.why;
   if (t.bad) {
     for (let it = 0; it < 9; it++) {
       const mid = (lo + hi) / 2, t2 = test(mid, w);
-      if (t2.bad) hi = mid; else { lo = mid; w = t2.sol; }
+      if (t2.bad) { hi = mid; why = t2.why; } else { lo = mid; w = t2.sol; }
       await tick(); if (!live()) return false;
     }
-  } else lo = hi;
+  } else { lo = hi; why = kind === 'load' ? 'the plants run out of room' : 'the plants reach their minimum'; }
   res.exact.set(i, lo);
+  res.exactWhy.set(i, why);
   return true;
 }
 async function verifyRoom(res) {
@@ -5883,6 +6007,7 @@ const roomDone = (r) => !!r && !r.err && r.done >= r.cand.length;
 function roomWhy(i) {
   const r = ROOM.res, w = r && r.why[i];
   if (!r || !isFinite(r.room[i])) return '';
+  if (r.exactWhy.has(i)) return r.exactWhy.get(i);   // checked: what the exact check ran into
   if (w > 0) return `${edgeTitle(w - 1)} reaches its rating`;
   if (w < 0) return `bus ${M.ids[-w - 1]} falls below 0.95 pu`;
   return r.kind === 'load' ? 'the plants run out of room' : 'the plants reach their minimum';
@@ -6088,9 +6213,15 @@ function init() {
     clearTimeout(rzTimer);
     rzTimer = setTimeout(() => { if (!cam.touched) fitView(false); }, 150);
   });
+  const typing = (ev) => ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA');
   window.addEventListener('keydown', (ev) => {
-    if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'SELECT')) return;
-    if (ev.key === ' ' && !ev.repeat) { showBefore(true); ev.preventDefault(); }
+    if (typing(ev)) return;
+    // with Ctrl, Cmd or Alt the key belongs to the browser (Cmd+F, Ctrl+1...), except Ctrl+Z / Cmd+Z, which undoes here
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && !ev.shiftKey && (ev.key === 'z' || ev.key === 'Z')) { undo(); ev.preventDefault(); }
+      return;
+    }
+    if (ev.key === ' ') { if (!ev.repeat) showBefore(true); ev.preventDefault(); }
     else if (ev.key === 'Escape') {
       if (DRAG.armed) cancelDrag();
       else if (S.peek) endPeek();
@@ -6103,8 +6234,10 @@ function init() {
     else if (ev.key >= '1' && ev.key <= '5') setView(['flow', 'change', 'voltage', 'risk', 'room'][+ev.key - 1], true);
   });
   window.addEventListener('keyup', (ev) => {
-    if (ev.key === ' ') showBefore(false);
+    // nor is the Space passed on to a focused button when it comes up (some browsers click it then)
+    if (ev.key === ' ') { showBefore(false); if (!typing(ev)) ev.preventDefault(); }
   });
+  window.addEventListener('blur', () => showBefore(false));   // Space let go in another window: no keyup here
   // a link pasted into this tab: the page follows it
   window.addEventListener('hashchange', () => {
     const h = readHash();
