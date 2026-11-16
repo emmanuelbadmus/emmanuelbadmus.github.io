@@ -917,6 +917,15 @@ function fmtP(v) { return fmtNum(v, Math.abs(v) >= 100 || Math.abs(v - Math.roun
 function fmtFit(v) { return fmtP(v >= 100 ? Math.floor(v + 1e-9) : Math.floor(v * 10 + 1e-9) / 10); }
 function fmtSigned(v, d = 1) { return (v > 0 ? '+' : v < 0 ? '−' : '±') + fmtNum(Math.abs(v), d); }
 function fmtPct(v) { return isFinite(v) ? fmtNum(v, v >= 100 ? 0 : 1) + '%' : '—'; }
+/** Why a part with machines went dark (f: an entry of a solution's fell), in a few words. */
+function fellWhy(f) {
+  const pct = `${Math.round((100 * f.gap) / f.load)}%`;
+  return f.trips
+    ? `it made ${fmtMW(f.gen)} MW for ${fmtMW(f.load)} MW of load. Its governors could not turn that down, so ${f.trips === 1 ? 'a unit' : `${f.trips} units`} (${fmtMW(f.tripMW)} MW) tripped on over-frequency, leaving it ${pct} short`
+    : `it was ${pct} short of power (${fmtMW(f.gap)} MW)`;
+}
+/** Machines of bus i that tripped in solution sol. */
+const tripsAt = (sol, i) => (sol && sol.sched ? sol.sched.trips.reduce((k, t) => k + (t.b === i ? t.n || 1 : 0), 0) : 0);
 
 const ICON_WARN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 2 21h20L12 3z"/><path d="M12 10v5M12 18h.01"/></svg>';
 const ICON_UNDO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>';
@@ -1103,6 +1112,8 @@ function buildModel(net) {
     xs: Gd.xs ? Float64Array.from(Gd.xs) : null,   // subtransient reactance on the system base (0: a converter, no model)
   };
   { const seen = new Uint16Array(n); for (let k = 0; k < nu; k++) mdl.units.nth[k] = ++seen[mdl.units.bus[k]]; }
+  mdl.unitsAt = Array.from({ length: n }, () => []);
+  for (let k = 0; k < nu; k++) mdl.unitsAt[mdl.units.bus[k]].push(k);
   for (let i = 0; i < n; i++) {
     const t = Bd.type[i];
     mdl.iso[i] = t === 4 ? 1 : 0;
@@ -1199,20 +1210,100 @@ function findBridges(mdl) {
   return br;
 }
 
-/** Under-frequency load shedding takes at most this share of a part's load; a part short of more goes dark. */
-const SHED_MAX = 0.3;
+/*
+ * Where outages split the grid, the part that keeps most of the load stands for the interconnection: its reserves cover
+ * what it loses, its machines moving in proportion to their room (roomUp, roomDown), as for a plant outage.
+ * A smaller part cut off from it is an island, and the page shows it in the seconds after, with what US practice sets:
+ * - Governors move machines along a droop of 5% (the most FERC Order 842 allows), all in proportion to their rating.
+ *   Frequency has to settle between 59.3 and 60.7 Hz (NERC PRC-006), so a governor moves its machine at most
+ *   0.7 / (0.05 x 60) = 23% of its rating, and never past Pmax or below Pmin. Nuclear units hold their output (they are
+ *   exempt from frequency response); wind and solar can turn down but not up (they run at what the weather gives).
+ * - Short of power: under-frequency load shedding cuts what the governors cannot cover, evenly. It is designed for a
+ *   gap of up to 25% of the load (PRC-006) and acts before governors can, so a part short by more goes dark.
+ * - More power than the governors can take off: frequency rises past the band and units trip on over-frequency, the
+ *   largest first, until the rest can hold it. If that leaves the part short, the rule above.
+ */
+const GOV_MAX = 0.7 / (0.05 * 60);
+/** The largest gap under-frequency load shedding is designed to cover, as a share of a part's load. */
+const SHED_MAX = 0.25;
+/** Governors raise (up) or lower a machine of this fuel. */
+const govUp = (f) => f !== 'nuclear' && f !== 'wind' && f !== 'solar';
+const govDown = (f) => f !== 'nuclear';
+/** The spare room of bus i's machines in case c, as dispatch uses it over minutes: up to Pmax, except nuclear units
+    (they do not ramp up) and wind and solar (they run at what the weather gives); down to Pmin, never below zero. */
+const roomUp = (c, i) => (c.ng[i] && govUp(c.fuel[i]) ? Math.max(0, c.pmax[i] - c.pg[i]) : 0);
+const roomDown = (c, i) => (c.ng[i] ? Math.max(0, c.pg[i] - Math.max(0, c.pmin[i])) : 0);
 /**
- * Which buses stay energized with the given branches out, which buses balance them, and what each
- * machine and load is scheduled at.
- * The removed branches carried power between the parts they now separate (their flow in the intact
- * grid). Each part takes up its own surplus or shortfall, as governors do: its machines move in
- * proportion to their room to move (up to Pmax, down to Pmin). A part whose machines cannot cover its load
- * sheds load evenly, up to SHED_MAX of it; a part short of more than that, or with no machine, goes dark.
- * The balancing bus of each part (the case's reference bus, or the part's largest machine) covers losses.
+ * The machines at bus b in the case the solver sees, one by one: the case's own (each its share of the bus's output),
+ * and the new plants placed there as one more (fuel 'other', u = -1, n: how many plants it stands for).
+ */
+function busMachines(b) {
+  const U = M.units, us = CTX.off ? M.unitsAt[b].filter((u) => !CTX.off.has(u)) : M.unitsAt[b], list = [];
+  let pmaxU = 0, pminU = 0, qmaxU = 0, qminU = 0, w = 0;
+  for (const u of us) { pmaxU += U.pmax[u]; pminU += U.pmin[u]; qmaxU += U.qmax[u]; qminU += U.qmin[u]; w += U.pg[u]; }
+  const extra = M.pmax[b] - pmaxU, newPg = extra > 0.05 ? clamp(M.pg[b], 0, extra) : 0, casePg = M.pg[b] - newPg;
+  for (const u of us) {
+    const share = w > 1e-9 ? U.pg[u] / w : pmaxU > 1e-9 ? U.pmax[u] / pmaxU : 1 / us.length;
+    list.push({ b, u, fuel: U.fuel[u], pg: casePg * share, pmax: U.pmax[u], pmin: U.pmin[u], qmax: U.qmax[u], qmin: U.qmin[u] });
+  }
+  if (extra > 0.05) list.push({ b, u: -1, n: Math.max(1, M.ng[b] - us.length), fuel: 'other', pg: newPg, pmax: extra, pmin: M.pmin[b] - pminU, qmax: M.qmax[b] - qmaxU, qmin: M.qmin[b] - qminU });
+  return list;
+}
+/** Governors share out `need` MW: every machine moves the same share k of its rating, each at most its cap. */
+function droopShare(ms, caps, need) {
+  const idx = [];
+  let rest = 0, fixed = 0, h = 0;
+  for (let j = 0; j < ms.length; j++) if (caps[j] > 1e-12 && ms[j].pmax > 0) { idx.push(j); rest += ms[j].pmax; }
+  idx.sort((a, c) => caps[a] / ms[a].pmax - caps[c] / ms[c].pmax);
+  for (; h < idx.length; h++) {   // machines at their cap before k reaches need
+    const j = idx[h];
+    if (fixed + (caps[j] / ms[j].pmax) * rest >= need) break;
+    fixed += caps[j]; rest -= ms[j].pmax;
+  }
+  const k = h < idx.length ? (need - fixed) / rest : Infinity, mv = new Float64Array(ms.length);
+  for (const j of idx) mv[j] = Math.min(caps[j], k * ms[j].pmax);
+  return mv;
+}
+/**
+ * A part that needs `need` MW more generation than it had (less, when negative) and has `load` MW of load: which of its
+ * machines ms trip, where the rest end up, and how much load is shed; { dark: true } when it goes dark (with gap: the MW
+ * it is left short of). main: the part that stands for the interconnection (its machines move by their room), else an
+ * island (by their governors).
+ */
+function rebalance(ms, need, load, main) {
+  const on = new Uint8Array(ms.length).fill(1), trips = [];
+  const lim = (j) => (main ? Infinity : GOV_MAX * ms[j].pmax);
+  const capDown = (j) => (on[j] && (main || govDown(ms[j].fuel)) ? Math.max(0, Math.min(ms[j].pg - Math.max(0, ms[j].pmin), lim(j))) : 0);
+  const capUp = (j) => (on[j] && govUp(ms[j].fuel) ? Math.max(0, Math.min(ms[j].pmax - ms[j].pg, lim(j))) : 0);
+  let gap = need;
+  while (gap < -1e-9) {   // more than the governors can take off: the largest running unit trips
+    let down = 0, big = -1;
+    for (let j = 0; j < ms.length; j++) {
+      down += capDown(j);
+      if (on[j] && ms[j].pg > 1e-6 && (big < 0 || ms[j].pg > ms[big].pg)) big = j;
+    }
+    if (-gap <= down + 1e-9 || big < 0) break;
+    on[big] = 0; trips.push(ms[big]); gap += ms[big].pg;
+  }
+  if (gap > SHED_MAX * load + 1e-9 || !on.some((x, j) => x && ms[j].pmax > 0)) return { dark: true, trips, gap };
+  const caps = ms.map((_, j) => (gap > 0 ? capUp(j) : capDown(j))), room = caps.reduce((t, c) => t + c, 0);
+  const move = Math.min(Math.abs(gap), room);
+  const mv = main ? caps.map((c) => (room > 0 ? (c * move) / room : 0)) : droopShare(ms, caps, move);
+  const pg = ms.map((m, j) => (on[j] ? m.pg + (gap > 0 ? mv[j] : -mv[j]) : 0));
+  return { dark: false, on, pg, trips, shed: gap > 0 ? gap - move : 0, moved: move };
+}
+/**
+ * Which buses stay energized with the given branches out, which buses balance them, and what each machine and load
+ * is scheduled at. The removed branches carried power between the parts they now separate (their flow in the intact
+ * grid, or for a cascade step in the state the step before left); each part takes up its own surplus or shortfall as
+ * rebalance() sets out. The balancing bus of each part (the case's reference bus, or else the part's largest machine
+ * left) covers losses. When machines are out, sched.cut is the case without them, which the solver then sees.
+ * fell: the parts with machines that went dark, and why. A cascade step keeps what the steps before did: parts dark
+ * stay dark, tripped machines stay out, shed load stays shed.
  */
 function liveBuses(out) {
-  const { n, ef, et, busEdges, pl, pg, pmax, pmin, ng, ref, iso } = M;
-  const comp = new Int32Array(n).fill(-1), live = new Uint8Array(n), slacks = [];
+  const { n, ef, et, busEdges, pl, pg, pmax, ng, ref, iso } = M, carry = CTX.carry;
+  const comp = new Int32Array(n).fill(-1), live = new Uint8Array(n), slacks = [], fell = carry ? carry.fell.slice() : [];
   const q = new Int32Array(n);
   const parts = [];
   for (let s0 = 0; s0 < n; s0++) {
@@ -1231,8 +1322,13 @@ function liveBuses(out) {
         if (comp[v] < 0 && !iso[v]) { comp[v] = s0; q[tail++] = v; }
       }
     }
-    if (load > 0 && (refs.length || best >= 0)) parts.push({ root: s0, buses: q.slice(0, tail), load, cap, refs, best });
+    if (carry && carry.dark[s0]) continue;   // dark since an earlier step
+    if (load > 0 && (refs.length || best >= 0)) parts.push({ root: s0, buses: q.slice(0, tail), load, cap, refs, best, main: false });
   }
+  // the part of each piece of the intact grid that keeps the most load stands for the interconnection
+  const mains = new Map();
+  for (const p of parts) { const k = M.comp[p.root], o = mains.get(k); if (!o || p.load > o.load) mains.set(k, p); }
+  for (const p of mains.values()) p.main = true;
   // what each part exported over the removed branches in the intact grid
   const refSol = CTX.ref || S.base;
   const base = out.size && refSol && refSol.ok ? refSol : null;
@@ -1246,36 +1342,88 @@ function liveBuses(out) {
     }
   }
   let sched = null;
-  const mk = () => sched || (sched = { pg: Float64Array.from(pg), pl: Float64Array.from(pl), ql: Float64Array.from(M.ql), shed: 0, moved: 0, parts: 0 });
+  const mk = () => sched || (sched = { pg: Float64Array.from(pg), pl: Float64Array.from(pl), ql: Float64Array.from(M.ql), shed: 0, moved: 0, parts: 0,
+    trips: carry ? carry.trips.slice() : [], cut: null });
+  const tripped = [];   // machines this solve trips
+  if (carry) { mk(); sched.moved = carry.moved; }
   for (const p of parts) {
+    let refs = p.refs, best = p.best;
     if (!base) {   // the intact grid (or no answer for it): the case's own dispatch, as before
       if (!(p.refs.length || p.cap >= p.load)) continue;
     } else {
       const need = -(exp.get(p.root) || 0);   // MW more generation this part needs now
-      if (Math.abs(need) > 1e-9) {
+      if (Math.abs(need) > 1e-9 && p.main) {
+        // the interconnection: its machines move in proportion to their room, bus by bus (as one machine each)
         let room = 0;
-        for (const u of p.buses) if (ng[u]) room += need > 0 ? Math.max(0, pmax[u] - pg[u]) : Math.max(0, pg[u] - Math.max(0, pmin[u]));
-        const shortfall = need > 0 ? Math.max(0, need - room) : 0;
-        if (shortfall > SHED_MAX * p.load + 1e-9) continue;   // short of too much: this part goes dark
-        const sc = mk(), take = room > 0 ? Math.min(1, Math.abs(need) / room) : 0;
-        for (const u of p.buses) {
-          if (!ng[u]) continue;
-          if (need > 0) sc.pg[u] = pg[u] + take * Math.max(0, pmax[u] - pg[u]);
-          else sc.pg[u] = pg[u] - take * Math.max(0, pg[u] - Math.max(0, pmin[u]));
+        for (const u of p.buses) room += need > 0 ? roomUp(M, u) : roomDown(M, u);
+        const short = need > 0 ? Math.max(0, need - room) : 0;
+        if (need > 0 ? short <= SHED_MAX * p.load + 1e-9 : -need <= room + 1e-9) {
+          const sc = mk(), take = room > 0 ? Math.min(1, Math.abs(need) / room) : 0;
+          for (const u of p.buses) {
+            if (!ng[u]) continue;
+            if (need > 0) sc.pg[u] = pg[u] + take * roomUp(M, u);
+            else sc.pg[u] = pg[u] - take * roomDown(M, u);
+          }
+          if (short > 0) {
+            const k = 1 - short / p.load;
+            for (const u of p.buses) { sc.pl[u] = pl[u] * k; sc.ql[u] = M.ql[u] * k; }
+            sc.shed += short;
+          }
+          sc.moved += Math.min(Math.abs(need), room);
+          sc.parts++;
+          for (const u of p.buses) live[u] = 1;
+          if (refs.length) slacks.push(...refs); else slacks.push(best);
+          continue;
         }
-        if (shortfall > 0) {
-          const k = 1 - shortfall / p.load;
+      }
+      if (Math.abs(need) > 1e-9) {   // an island, or the interconnection with more than its machines can turn down
+        const ms = [];
+        for (const u of p.buses) if (ng[u]) for (const m of busMachines(u)) ms.push(m);
+        const r = rebalance(ms, need, p.load, p.main);
+        if (r.dark) {   // this part goes dark
+          if (ms.length) fell.push({ bus: p.best, buses: p.buses, load: p.load, gen: ms.reduce((t, m) => t + m.pg, 0), need, gap: r.gap,
+            trips: r.trips.length, tripMW: r.trips.reduce((t, m) => t + m.pg, 0) });
+          continue;
+        }
+        const sc = mk(), left = new Map();
+        for (let j = 0; j < ms.length; j++) sc.pg[ms[j].b] = 0;
+        for (let j = 0; j < ms.length; j++) if (r.on[j]) { sc.pg[ms[j].b] += r.pg[j]; left.set(ms[j].b, (left.get(ms[j].b) || 0) + ms[j].pmax); }
+        if (r.shed > 0) {
+          const k = 1 - r.shed / p.load;
           for (const u of p.buses) { sc.pl[u] = pl[u] * k; sc.ql[u] = M.ql[u] * k; }
-          sc.shed += shortfall;
+          sc.shed += r.shed;
         }
-        sc.moved += Math.min(Math.abs(need), room);
+        sc.moved += r.moved;
         sc.parts++;
+        if (r.trips.length) {
+          for (const t of r.trips) { sc.trips.push(t); tripped.push(t); }
+          // the balancing role stays with a reference bus that keeps a machine, else the largest machine left
+          refs = refs.filter((u) => !ng[u] || left.has(u));
+          best = -1;
+          for (const [u, c] of left) if (best < 0 || c > left.get(best)) best = u;
+        }
       }
     }
     for (const u of p.buses) live[u] = 1;
-    if (p.refs.length) slacks.push(...p.refs); else slacks.push(p.best);
+    if (refs.length) slacks.push(...refs); else slacks.push(best);
   }
-  return { live, slacks, sched };
+  if (tripped.length) {
+    const c = caseCopy(caseArrays());
+    for (const t of tripped) {
+      const b = t.b;
+      if (c.typ[b] === 0 && c.pmax[b] > 1e-9) c.qg[b] *= Math.max(0, 1 - t.pmax / c.pmax[b]);   // a machine on a PQ bus: its fixed Mvar
+      c.pmax[b] -= t.pmax; c.pmin[b] -= t.pmin; c.qmax[b] -= t.qmax; c.qmin[b] -= t.qmin;
+      if ((c.ng[b] -= t.n || 1) <= 0) busLosesMachines(c, b);
+    }
+    for (const t of tripped) c.pg[t.b] = c.ng[t.b] ? sched.pg[t.b] : 0;
+    c.off = new Set([...(CTX.off || []), ...tripped.filter((t) => t.u >= 0).map((t) => t.u)]);
+    sched.cut = c;
+  } else if (sched && sched.trips.length) sched.cut = { ...caseArrays(), off: CTX.off };   // tripped in an earlier step
+  if (carry) {   // load shed in all the steps so far, where the lights are still on
+    sched.shed = 0;
+    for (let i = 0; i < n; i++) if (live[i]) sched.shed += Math.max(0, carry.pl0[i] - sched.pl[i]);
+  }
+  return { live, slacks, sched, fell };
 }
 
 /* =====================================================================
@@ -1286,15 +1434,17 @@ const PF_PLANT = 0.95;
 /** The arrays new connections change. CASE0 keeps the case as published, so they can come out again. */
 const CASE_KEYS = ['pg', 'pl', 'ql', 'qg', 'qmin', 'qmax', 'pmax', 'pmin', 'vset', 'ng', 'typ', 'fuel', 'ref'];
 let CASE0 = null;
-/** The intact-grid solution that outages are rebalanced against, when it is not S.base (set by withCase). */
-const CTX = { ref: null };
+/** Set by withCase from the case it runs: the solution outages are rebalanced against, when it is not S.base (ref); the
+    case's machines that are out (off: a plant outage, units a cascade step tripped); and, for a cascade step, what the
+    step before left (carry: see caseAfter). */
+const CTX = { ref: null, off: null, carry: null };
 function caseArrays() { const c = {}; for (const k of CASE_KEYS) c[k] = M[k]; return c; }
 function useCase(c) { for (const k of CASE_KEYS) M[k] = c[k]; }
 /** Run fn with the solver seeing case c (and rebalancing outages against the intact solution ref), then put back what it saw. */
 function withCase(c, fn, ref) {
-  const prev = caseArrays(), prevRef = CTX.ref;
-  useCase(c); CTX.ref = ref || null;
-  try { return fn(); } finally { useCase(prev); CTX.ref = prevRef; }
+  const prev = caseArrays(), was = { ...CTX };
+  useCase(c); CTX.ref = ref || null; CTX.off = c.off || null; CTX.carry = c.carry || null;
+  try { return fn(); } finally { useCase(prev); Object.assign(CTX, was); }
 }
 /**
  * How far the published case's machines can move to make room: up to their maximum (up) and down to their minimum,
@@ -1307,7 +1457,7 @@ function caseRoom(buses) {
   let up = 0, down = 0;
   while (q.length) {
     const u = q.pop();
-    if (c.ng[u]) { up += Math.max(0, c.pmax[u] - c.pg[u]); down += Math.max(0, c.pg[u] - Math.max(0, c.pmin[u])); }
+    up += roomUp(c, u); down += roomDown(c, u);
     for (const e of busEdges[u]) { const v = ef[e] === u ? et[e] : ef[e]; if (!seen[v] && !iso[v]) { seen[v] = 1; q.push(v); } }
   }
   return { up, down, seen };
@@ -1318,8 +1468,8 @@ const netNeed = (adds) => adds.reduce((s, a) => s + (a.kind === 'load' ? a.p : -
  * The case with the new connections in. A load draws a.p MW at power factor a.pf (lagging). A plant makes a.p MW, holds
  * its bus at the voltage the case solution has there, and can make or absorb up to the PF_PLANT range of Mvar. The rest
  * of the grid makes up the difference between the new loads and the new plants: with src 'spread' every machine of the
- * case moves in proportion to its room to move (as when an outage splits the grid); with 'slack' the balancing plant
- * alone takes it up.
+ * case moves in proportion to its room to move (as the main part does when an outage splits the grid); with 'slack' the
+ * balancing plant alone takes it up.
  */
 function caseWith(adds, src) {
   const c0 = CASE0, c = {};
@@ -1340,8 +1490,8 @@ function caseWith(adds, src) {
     short = Math.max(0, Math.abs(net) - room);
     for (let u = 0; u < M.n; u++) {
       if (!seen[u] || !c0.ng[u]) continue;
-      if (net > 0) c.pg[u] = c0.pg[u] + take * Math.max(0, c0.pmax[u] - c0.pg[u]);
-      else c.pg[u] = c0.pg[u] - take * Math.max(0, c0.pg[u] - Math.max(0, c0.pmin[u]));
+      if (net > 0) c.pg[u] = c0.pg[u] + take * roomUp(c0, u);
+      else c.pg[u] = c0.pg[u] - take * roomDown(c0, u);
     }
   }
   for (const a of adds) if (a.kind === 'plant') c.pg[a.bus] += a.p;
@@ -1375,17 +1525,17 @@ function caseCopy(cs) {
   return c;
 }
 /** The machines on bus b's piece of the grid make up `need` MW more (or less, when negative) between them, each in
-    proportion to its room (up to Pmax; down to Pmin, never below zero), as governors and dispatch share it out. */
+    proportion to its room (roomUp, roomDown), as governors and dispatch share it out. */
 function spreadNeed(c, need, b) {
   if (Math.abs(need) < 1e-9) return 0;
   const comp = M.comp[b];
   let room = 0;
-  for (let i = 0; i < M.n; i++) if (c.ng[i] && M.comp[i] === comp) room += need > 0 ? Math.max(0, c.pmax[i] - c.pg[i]) : Math.max(0, c.pg[i] - Math.max(0, c.pmin[i]));
+  for (let i = 0; i < M.n; i++) if (M.comp[i] === comp) room += need > 0 ? roomUp(c, i) : roomDown(c, i);
   const take = room > 0 ? Math.min(1, Math.abs(need) / room) : 0;
   for (let i = 0; i < M.n; i++) {
     if (!c.ng[i] || M.comp[i] !== comp) continue;
-    if (need > 0) c.pg[i] += take * Math.max(0, c.pmax[i] - c.pg[i]);
-    else c.pg[i] -= take * Math.max(0, c.pg[i] - Math.max(0, c.pmin[i]));
+    if (need > 0) c.pg[i] += take * roomUp(c, i);
+    else c.pg[i] -= take * roomDown(c, i);
   }
   return Math.max(0, Math.abs(need) - room);   // MW the machines could not take: the balancing plant runs past its range
 }
@@ -1406,6 +1556,7 @@ function caseWithout(cs, u) {
   c.pg[b] -= lost; c.pmax[b] -= U.pmax[u]; c.pmin[b] -= U.pmin[u]; c.qmax[b] -= U.qmax[u]; c.qmin[b] -= U.qmin[u];
   if (--c.ng[b] <= 0) busLosesMachines(c, b);
   c.short = spreadNeed(c, lost, b);   // spare generation the rest are short of to cover it
+  c.off = new Set([...(cs.off || CTX.off || []), u]);
   return c;
 }
 /** What machine u makes in case cs (as caseWithout counts it). */
@@ -1586,7 +1737,7 @@ function buildPattern(dim, rows) {
 /** The energized part of the grid in local numbering, with its admittance matrix and a bus order. */
 function island(out) {
   const { n, m, ef, et, Y, gs, bs } = M;
-  const { live, slacks, sched } = liveBuses(out);
+  const { live, slacks, sched, fell } = liveBuses(out);
   const L = [], loc = new Int32Array(n).fill(-1);
   for (let i = 0; i < n; i++) if (live[i]) { loc[i] = L.length; L.push(i); }
   const nL = L.length;
@@ -1611,7 +1762,7 @@ function island(out) {
   const order = ndOrder(nL, nbr, px, py);
   const isSlack = new Uint8Array(nL);
   for (const s of slacks) if (loc[s] >= 0) isSlack[loc[s]] = 1;
-  return { live, slacks, isSlack, L, loc, nL, Gd, Bd, nbr, nG, nB, used, order, sched,
+  return { live, slacks, isSlack, L, loc, nL, Gd, Bd, nbr, nG, nB, used, order, sched, fell, cut: sched ? sched.cut : null,
     PG: sched ? sched.pg : M.pg, PL: sched ? sched.pl : M.pl, QL: sched ? sched.ql : M.ql };
 }
 
@@ -1623,7 +1774,7 @@ function emptySolution(engine) {
     pf: new Float64Array(m), qf: new Float64Array(m), pt: new Float64Array(m), qt: new Float64Array(m),
     s: new Float64Array(m), load: new Float64Array(m), pgBus: new Float64Array(n), qgBus: new Float64Array(n),
     qlim: new Uint8Array(n), loss: 0, slacks: [], slack: M.slack, log: [], mismatch: 0, balance: 0,
-    sched: null, shed: 0, moved: 0,
+    sched: null, shed: 0, moved: 0, fell: [],
   };
 }
 
@@ -1632,14 +1783,18 @@ function emptySolution(engine) {
  * (opts.qlim === false turns the limits off, which the MATPOWER check uses).
  */
 function solveAC(out, warm, opts) {
+  const t0 = performance.now(), I = island(out);
+  // machines that tripped are out of the case the solve sees
+  return I.cut ? withCase(I.cut, () => solveACIsland(I, warm, opts, t0), CTX.ref) : solveACIsland(I, warm, opts, t0);
+}
+function solveACIsland(I, warm, opts, t0) {
   const useQ = !(opts && opts.qlim === false);
-  const t0 = performance.now();
   const base = M.base;
-  const I = island(out);
   const { live, L, nL, Gd, Bd, nbr, nG, nB, isSlack, PG, PL, QL } = I;
   const sol = emptySolution('ac');
   sol.live = live; sol.slacks = I.slacks; sol.slack = I.slacks.find((s) => M.ref[s]) ?? I.slacks[0] ?? -1;
   if (I.sched) { sol.sched = I.sched; sol.shed = I.sched.shed; sol.moved = I.sched.moved; }
+  sol.fell = I.fell;
   if (nL === 0) { sol.ok = true; sol.ms = performance.now() - t0; return sol; }
 
   const ty = new Uint8Array(nL), ty0 = new Uint8Array(nL), Psch = new Float64Array(nL), Qsch = new Float64Array(nL);
@@ -1945,13 +2100,16 @@ function finishSolution(sol, I, vm, va, P, Q, ty) {
 
 /** DC power flow: B θ = P, flows from angle differences, voltages 1.0 pu, no losses. */
 function solveDC(out) {
-  const t0 = performance.now();
+  const t0 = performance.now(), I = island(out);
+  return I.cut ? withCase(I.cut, () => solveDCIsland(I, t0), CTX.ref) : solveDCIsland(I, t0);
+}
+function solveDCIsland(I, t0) {
   const base = M.base;
-  const I = island(out);
   const { live, L, loc, nL, used, isSlack, order, PG, PL } = I;
   const sol = emptySolution('dc');
   sol.live = live; sol.slacks = I.slacks; sol.slack = I.slacks.find((s) => M.ref[s]) ?? I.slacks[0] ?? -1;
   if (I.sched) { sol.sched = I.sched; sol.shed = I.sched.shed; sol.moved = I.sched.moved; }
+  sol.fell = I.fell;
   if (nL === 0) { sol.ok = true; sol.ms = performance.now() - t0; return sol; }
   const bOf = (e) => 1 / (M.xr[e] * M.tap[e]);
   const pinj = new Float64Array(nL);   // phase shifters: their angle acts as an injection
@@ -2014,7 +2172,53 @@ function solveDC(out) {
   return sol;
 }
 
-function solve(out, warm) { S.solves++; return S.engine === 'dc' ? solveDC(out) : solveAC(out, warm); }
+function solve(out, warm, opts) { S.solves++; return S.engine === 'dc' ? solveDC(out) : solveAC(out, warm, opts); }
+/**
+ * The case a cascade step starts from: what solution prev left. Machines at what they made and loads as served, the
+ * machines that tripped out of it; and what carries on (carry): the buses already dark, the trips, the parts that went
+ * dark and why, the MW machines moved, and the loads before any shedding (pl0).
+ */
+function caseAfter(prev) {
+  const sc = prev.sched, c = caseCopy((sc && sc.cut) || caseArrays());
+  for (let i = 0; i < M.n; i++) if (prev.live[i] && c.ng[i]) c.pg[i] = prev.pgBus[i];
+  if (sc) { c.pl.set(sc.pl); c.ql.set(sc.ql); }
+  const dark = new Uint8Array(M.n);
+  for (let i = 0; i < M.n; i++) dark[i] = prev.live[i] ? 0 : 1;
+  c.off = (sc && sc.cut && sc.cut.off) || CTX.off || null;
+  c.carry = { dark, pl0: CTX.carry ? CTX.carry.pl0 : M.pl, trips: sc ? sc.trips.slice() : [], fell: (prev.fell || []).slice(), moved: prev.moved || 0 };
+  return c;
+}
+/** Lines `out` out, as the step after solution prev: each part's imbalance is what its newly opened lines carried in prev. */
+function solveAfter(prev, out, warm, opts) {
+  return withCase(caseAfter(prev), () => solve(out, warm === undefined ? prev : warm, opts), prev);
+}
+/**
+ * The grid as it now is: the lines out, and after a cascade each of its steps solved from the state the step before
+ * left (S.chain keeps the last, so the next step starts from it). A failed warm start gets one cold try.
+ */
+function solveCurrent(warm) {
+  if (!S.out.size) { S.chain = null; return S.base; }
+  const again = (sol, fn) => { if (sol.ok || S.engine !== 'ac') return sol; const c = fn(); return c.ok ? c : sol; };
+  const steps = [];
+  for (const [e, k] of S.tripped) (steps[k - 1] = steps[k - 1] || []).push(e);
+  const lists = [[...S.out].filter((e) => !S.tripped.has(e)), ...steps.filter(Boolean)];
+  const keys = lists.map((l) => l.slice().sort((a, b) => a - b).join(','));
+  const ch = S.chain;
+  const from = ch && ch.base === S.base && ch.keys.length <= keys.length && ch.keys.every((k, j) => k === keys[j]) ? ch.keys.length : 0;
+  let sol = from ? ch.sol : null;
+  const out = new Set();
+  lists.forEach((l, j) => {
+    for (const e of l) out.add(e);
+    if (j < from) return;
+    const o = new Set(out), prev = sol;
+    if (j === 0) sol = o.size ? again(solve(o, warm), () => solve(o, null)) : S.base;
+    else if (prev.ok) sol = again(solveAfter(prev, o), () => solveAfter(prev, o, null));
+    const st = j > 0 && S.cascade && S.cascade.status === 'link' ? S.cascade.steps[j - 1] : null;
+    if (st && prev.ok) { const r = sol.ok ? stats(sol) : null; Object.assign(st, { ok: sol.ok, cutLoad: r ? r.lost : NaN, cutBuses: r ? r.cutBuses : 0 }); }
+  });
+  S.chain = { base: S.base, keys, sol };
+  return sol;
+}
 
 /** Headline numbers of a solution (buses the case itself leaves isolated are not counted). */
 function stats(sol) {
@@ -2044,6 +2248,7 @@ const S = {
   key: null, engine: 'ac', view: 'flow', viewChosen: false,
   out: new Set(), history: [],
   base: null, sol: null, baseStats: null, solStats: null,
+  chain: null,          // the state as last solved: { base, keys (the lines out, then each cascade step's), sol }
   orig: null, origStats: null,   // the intact grid as published (base is the intact grid with the new connection in)
   adds: [],             // the new connections: { uid, kind: 'load' | 'plant', bus, p (MW), pf }
   solvePending: false,  // a big grid: the connections are set, the grid with them not solved yet
@@ -3377,7 +3582,10 @@ function tipBus(i) {
   const sol = displayed(), base = REF();
   const where = [M.sub[i] && 'substation ' + M.sub[i], M.zone[i] && M.zone[i] + ' zone'].filter(Boolean).join(' · ');
   let h = `<div class="kicker">${busKind(i)}</div><div class="t-title">Bus ${M.ids[i]} · ${esc(M.names[i])}</div><div class="t-sub">${esc(where)}</div>`;
-  if (sol && sol.ok && !sol.live[i]) return h + `<div class="t-row"><span>Status</span><b style="color:var(--removed)">Cut off</b></div><div class="t-sub" style="margin:4px 0 0">No path to the main grid. ${M.pl[i] > 0 ? fmtMW(M.pl[i]) + ' MW of load is lost.' : ''}</div>`;
+  if (sol && sol.ok && !sol.live[i]) {
+    const f = (sol.fell || []).find((x) => x.buses.includes(i));
+    return h + `<div class="t-row"><span>Status</span><b style="color:var(--removed)">Cut off</b></div><div class="t-sub" style="margin:4px 0 0">No path to the main grid${f ? `, and its part went dark: ${fellWhy(f)}` : ''}. ${M.pl[i] > 0 ? fmtMW(M.pl[i]) + ' MW of load is lost.' : ''}</div>`;
+  }
   if (sol && sol.ok) {
     if (S.engine === 'ac') {
       const dv = sol.vm[i] - base.vm[i];
@@ -3396,12 +3604,17 @@ function tipBus(i) {
   if ((M.ng[i] || M.typ[i] === 2) && sol && sol.ok) {
     if (M.unit[i]) h += `<div class="t-row"><span>Machine${M.ng[i] > 1 ? 's' : ''}</span><span>${M.ng[i] > 1 ? M.ng[i] + ' × ' : ''}${esc(M.unit[i].toLowerCase())}</span></div>`;
     h += `<div class="t-row"><span>Generation</span><span class="num">${fmtMW(sol.pgBus[i])} MW${S.engine === 'ac' ? ' · ' + fmtMW(sol.qgBus[i]) + ' Mvar' : ''}</span></div>`;
-    if (M.pmax[i] > 0) {
-      const over = sol.pgBus[i] > M.pmax[i] + 0.5;
-      h += `<div class="t-row"><span>Range</span><span class="num">${fmtMW(M.pmin[i])}–${fmtMW(M.pmax[i])} MW</span></div>`;
-      if (over) h += `<div class="t-row"><span></span><b style="color:var(--warn-text)">${fmtMW(sol.pgBus[i] - M.pmax[i])} MW above its maximum</b></div>`;
+    const nt = tripsAt(sol, i);
+    if (nt) h += `<div class="t-row"><span></span><b style="color:var(--warn-text)">${nt >= M.ng[i] ? (M.ng[i] > 1 ? 'All its units tripped' : 'Tripped') : `${nt} of its ${M.ng[i]} units tripped`} on over-frequency</b></div>`;
+    const K = nt ? sol.sched.cut : M;   // the machines still running
+    if (K.pmax[i] > 0 && nt < M.ng[i]) {
+      const over = sol.pgBus[i] > K.pmax[i] + 0.5;
+      h += `<div class="t-row"><span>Range</span><span class="num">${fmtMW(K.pmin[i])}–${fmtMW(K.pmax[i])} MW</span></div>`;
+      if (over) h += `<div class="t-row"><span></span><b style="color:var(--warn-text)">${fmtMW(sol.pgBus[i] - K.pmax[i])} MW above its maximum</b></div>`;
+      // a balancing machine whose part has more generation than its machines can turn down to takes the rest
+      else if (sol.live[i] && sol.pgBus[i] < K.pmin[i] - 0.5) h += `<div class="t-row"><span></span><b style="color:var(--warn-text)">${fmtMW(K.pmin[i] - sol.pgBus[i])} MW below its minimum</b></div>`;
     }
-    if (S.engine === 'ac' && M.qmax[i] > M.qmin[i]) h += `<div class="t-row"><span>Mvar range</span><span class="num">${fmtMW(M.qmin[i])} to ${fmtMW(M.qmax[i])}</span></div>`;
+    if (S.engine === 'ac' && K.qmax[i] > K.qmin[i]) h += `<div class="t-row"><span>Mvar range</span><span class="num">${fmtMW(K.qmin[i])} to ${fmtMW(K.qmax[i])}</span></div>`;
     if (sol.qlim[i]) h += `<div class="t-row"><span></span><b style="color:var(--warn-text)">At its ${sol.qlim[i] === 1 ? 'upper' : 'lower'} reactive limit${sol.slacks.includes(i) ? ': no longer holding its voltage' : ''}</b></div>`;
   }
   const nb = M.busEdges[i].length;
@@ -3435,13 +3648,8 @@ function resolveNow(waveFrom) {
   if (S.peek) endPeek(true);
   const prevOk = S.sol && S.sol.ok;
   const warm = prevOk ? S.sol : S.base;
-  S.sol = S.out.size ? solve(S.out, warm) : S.base;
+  S.sol = solveCurrent(warm);   // a cold start from the stored state sometimes finds what a warm start misses
   S.solSeq++;
-  if (!S.sol.ok && S.engine === 'ac' && S.out.size) {
-    // a cold start from the stored state sometimes finds what a warm start misses
-    const cold = solve(S.out, null);
-    if (cold.ok) S.sol = cold;
-  }
   S.solStats = S.sol.ok ? stats(S.sol) : null;
   if (changing() && !S.viewChosen && S.view === 'flow') setView('change', false, true);
   if (!changing() && !S.viewChosen && S.view === 'change') setView('flow', false, true);
@@ -3687,11 +3895,11 @@ function cancelDrag() {
 }
 
 /* ----- cascade: every line over its rating trips, the grid is solved again, until nothing more trips ----- */
-function overRated(sol) {
+function overRated(sol, outSet = S.out) {
   const list = [];
   if (!M.rated || !sol || !sol.ok) return list;
   for (let e = 0; e < M.m; e++) {
-    if (S.out.has(e) || !sol.live[M.ef[e]] || !sol.live[M.et[e]]) continue;
+    if (outSet.has(e) || !sol.live[M.ef[e]] || !sol.live[M.et[e]]) continue;
     const l = sol.load[e], l0 = S.base.load[e];
     // a line the intact case already runs over its rating trips only if it gets worse
     if (isFinite(l) && l > 100 && (!(l0 > 100) || l > l0 + 1)) list.push(e);
@@ -4291,7 +4499,7 @@ function cascadeHtml() {
     <h3 style="margin:0">Cascade</h3>
     ${rows ? `<div class="csteps">${rows}</div>` : ''}
     ${state}
-    <div class="fine">A simple model: at each step every line over its rating trips at once (a line the intact case already runs over its rating trips only if it gets worse), then the power flow is solved again. Where the grid splits, each part's machines rebalance it, and a part short of power sheds up to ${SHED_MAX * 100}% of its load; short of more, it goes dark. Real protection acts on current and time, and operators can move generation or shed load first. Undo puts the tripped lines back.</div>
+    <div class="fine">A simple model: at each step every line over its rating trips at once (a line the intact case already runs over its rating trips only if it gets worse), then the power flow is solved again from where the step before left it: tripped plants stay off and shed load stays shed. Where the grid splits, the part with most of the load covers what it lost. A smaller part has seconds to balance itself: governors move each plant at most ${Math.round(GOV_MAX * 100)}% of its rating (nuclear not at all), load shedding covers a shortfall of up to ${SHED_MAX * 100}% of its load, and with too much power its largest units trip. Short of more, it goes dark. Real protection acts on current and time, and operators can move generation or shed load first. Undo puts the tripped lines back.</div>
   </div>`;
 }
 function renderImpact() {
@@ -4335,16 +4543,31 @@ function renderImpact() {
     if (s.cutGen > 0.05) lost.push(`<b class="num">${fmtMW(s.cutGen)} MW</b> of generation`);
     parts.push(`<b class="num">${s.cutBuses}</b> bus${s.cutBuses === 1 ? ' is' : 'es are'} cut off from the main grid${lost.length ? ', losing ' + lost.join(' and ') : ''}.`);
   }
+  // a part cut off with machines of its own that could not hold itself
+  for (const f of (sol.fell || []).slice().sort((x, y) => y.load - x.load).slice(0, 2)) {
+    parts.push(`The part around bus ${M.ids[f.bus]} (${esc(M.names[f.bus])}) went dark: ${fellWhy(f)}, more than load shedding can cover (${SHED_MAX * 100}%).`);
+  }
+  const trips = sol.sched ? sol.sched.trips : [];
+  if (trips.length) {
+    const at = [...new Set(trips.map((t) => t.b))];
+    parts.push(`${trips.length === 1 ? 'A unit' : `<b class="num">${trips.length}</b> units`} (<b class="num">${fmtMW(trips.reduce((t, x) => t + x.pg, 0))} MW</b>) tripped on over-frequency where a part had more power than its governors could turn down (bus${at.length === 1 ? '' : 'es'} ${at.slice(0, 3).map((x) => M.ids[x]).join(', ')}${at.length > 3 ? '…' : ''}).`);
+  }
   if (s.moved > 0.5 || s.shed > 0.05) {
     parts.push(`Where the grid split, machines on either side changed output by <b class="num">${fmtMW(s.moved)} MW</b> in all to rebalance it${s.shed > 0.05 ? `, and <b class="num">${fmtMW(s.shed)} MW</b> of load is shed where they could not cover it (under-frequency load shedding)` : ''}.`);
   }
+  const K = (sol.sched && sol.sched.cut) || M;   // the machines still running
   // the balancing plant out of reactive power: it can no longer hold its voltage
   if (S.engine === 'ac') for (const x of sol.slacks.filter((y) => sol.qlim[y]).slice(0, 2)) {
     const up = sol.qlim[x] === 1, dig = Math.abs(sol.vm[x] - M.vset[x]) < 0.0005 ? 4 : 3;
-    parts.push(`The plant that balances ${sol.slacks.length > 1 ? 'its part of ' : ''}the grid (bus ${M.ids[x]}) is at its reactive-power ${up ? 'maximum' : 'minimum'}, <b class="num">${fmtMW(up ? M.qmax[x] : M.qmin[x])} Mvar</b>, so it can no longer hold its voltage at its setpoint: ${fmtNum(M.vset[x], dig)} → <b class="num">${fmtNum(sol.vm[x], dig)} pu</b>.`);
+    parts.push(`The plant that balances ${sol.slacks.length > 1 ? 'its part of ' : ''}the grid (bus ${M.ids[x]}) is at its reactive-power ${up ? 'maximum' : 'minimum'}, <b class="num">${fmtMW(up ? K.qmax[x] : K.qmin[x])} Mvar</b>, so it can no longer hold its voltage at its setpoint: ${fmtNum(M.vset[x], dig)} → <b class="num">${fmtNum(sol.vm[x], dig)} pu</b>.`);
   }
   const newSl = sol.slacks.filter((x) => !M.ref[x]);
   if (newSl.length) parts.push(`${newSl.length === 1 ? 'One part of the grid now runs' : `${newSl.length} parts of the grid now run`} on its own machines, balanced by bus${newSl.length === 1 ? '' : 'es'} <b>${newSl.slice(0, 3).map((x) => M.ids[x]).join(', ')}</b>.`);
+  // a part left with more generation than its machines can turn down to: the balancing machine takes the rest, below
+  // its minimum, where in practice a unit would trip on over-frequency
+  for (const x of sol.slacks.filter((y) => sol.pgBus[y] < K.pmin[y] - 0.5).slice(0, 2)) {
+    parts.push(`${M.ref[x] ? 'The grid' : `The part balanced by bus ${M.ids[x]}`} has more generation than its machines can turn down to, so bus ${M.ids[x]} runs <b class="num">${fmtMW(K.pmin[x] - sol.pgBus[x])} MW</b> below its minimum (${fmtMW(K.pmin[x])} MW). In practice a unit there would trip on over-frequency.`);
+  }
   if (M.rated) {
     const newOver = s.nOver - b.nOver;
     if (s.nOver) parts.push(`<b class="num">${s.nOver}</b> line${s.nOver === 1 ? ' is' : 's are'} now over the rating${newOver > 0 && b.nOver ? ` (${newOver} new)` : ''}.`);
@@ -4435,7 +4658,7 @@ function renderAdd() {
       <div id="addPick"></div>
       <div class="conn-list" id="addList"></div>
       <div class="src-row" id="addSrcRow" hidden>
-        <label for="addSrc">Supplied by ${info('Who makes up the difference. All plants: every plant moves in proportion to its spare room, as governors and dispatch spread it. Balancing plant: the slack plant alone takes it, the textbook assumption.')}</label>
+        <label for="addSrc">Supplied by ${info('Who makes up the difference. All plants: every plant moves in proportion to its spare room, as governors and dispatch spread it (nuclear, wind and solar plants cannot go up). Balancing plant: the slack plant alone takes it, the textbook assumption.')}</label>
         <select id="addSrc" class="sel"><option value="spread">all plants</option><option value="slack">the balancing plant</option></select>
       </div>
       <div id="addRes"></div>`;
@@ -4898,12 +5121,14 @@ function scanCompare(scan) {
   if (scan.cmp && scan.cmp.o === o && scan.cmp.n0 === o.done) return scan.cmp.res;
   const rows = [];
   let n = 0, failWith = 0, failWithout = 0;
+  const pre = { n: 0, max: 0, e: -1 };   // plant outages the other plants cannot cover even without the connections
   for (const e of scan.cand) {
     const c = scan.res[e], r = o.res[e];
     if (!c || !r) continue;
     n++;
     if (!c.ok) failWith++;
     if (!r.ok) failWithout++;
+    if (r.ok && r.short > 0.5) { pre.n++; if (r.short > pre.max) { pre.max = r.short; pre.e = e; } }
     let why = '', sev = 0, lines = [], low = null;
     if (!c.ok && r.ok) { why = 'no answer'; sev = 1e4; }
     else if (c.ok && r.ok) {
@@ -4932,15 +5157,17 @@ function scanCompare(scan) {
       } else if (c.cut > r.cut + 0.5) {
         why = `${fmtMW(c.cut - r.cut)} MW more load lost`;
         sev = 90;
-      } else if (c.short > r.short + 0.5) {
-        why = `the other plants are ${fmtMW(c.short - r.short)} MW short of covering it`;
+      } else if (c.short > 0.5 && !(r.short > 0.5)) {
+        // the spare generation that covered it without them is gone (one already short without them is the grid's
+        // own problem, as an overload already there is)
+        why = `the other plants are ${fmtMW(c.short)} MW short of covering it`;
         sev = 95;
       }
     }
-    if (why) rows.push({ e, why, sev, lines, low, short: c.ok && r.ok && c.short > r.short + 0.5 });
+    if (why) rows.push({ e, why, sev, lines, low, short: c.ok && r.ok && c.short > 0.5 && !(r.short > 0.5) });
   }
   rows.sort((x, y) => y.sev - x.sev);
-  const res = { running: false, rows, n, failWith, failWithout };
+  const res = { running: false, rows, n, failWith, failWithout, pre };
   scan.cmp = { o, n0: o.done, res };
   return res;
 }
@@ -4978,7 +5205,7 @@ function startCutback(kind) {
     }
     const v = engine === 'ac' ? minV(sol) : 1;
     if (v < 0.9 && !(cur.w0minV < 0.9) && cur.w0minV - v >= WORSE_PU) return true;
-    if ((sol.short || 0) > (cur.w0.short || 0) + 0.5) return true;
+    if ((sol.short || 0) > 0.5 && !((cur.w0.short || 0) > 0.5)) return true;
     return outcome(sol, one, base).cut > cur.w0cut + 0.5;
   }, S.base);
   // then the tightest share, finer: the outages tied at the smallest share found are halved down to FINE (the first),
@@ -5393,7 +5620,7 @@ const CHECKS = [
     tip: `Each line or transformer taken out on its own, with and without ${'{new}'}. Made worse: a line ends over its rating with them adding ${WORSE_PTS}% of the rating or more, a voltage under 0.90 pu drops ${WORSE_PU} pu more, more load is lost, or there is no answer. Fits: the largest size at which every one of these outages is fine.`,
     state: () => outState('line'), body: () => outHtml('line') },
   { key: 'g1', name: () => 'One plant out', view: 'change',
-    tip: 'Each generating unit tripped on its own, the other plants making up its output in proportion to their spare room. Counted against the new connections the same way as a line outage.',
+    tip: 'Each generating unit tripped on its own, the other plants making up its output in proportion to their spare room. Counted against the new connections the same way as a line outage, and also when the other plants could cover it without them but not with them.',
     state: () => outState('unit'), body: () => outHtml('unit') },
   { key: 'trip', name: () => (S.adds.length > 1 ? 'If one trips off' : 'If it trips off'), view: 'change',
     tip: 'The connection drops off at once, as data centers do when their protection sees a voltage dip, and the other plants back down (or, for a plant, make up its output). Checks the voltages and lines right after.',
@@ -5626,7 +5853,8 @@ function outHtml(kind) {
   const cmp = scanCompare(scan);
   if (!cmp || cmp.running) return scanBar(`The same outages without ${newName()}`, cmp ? cmp.pct : 0);
   const left = scanLeft(scan);
-  return compareHtml(scan) + (scope || left ? `<div class="muted ck-note h-with-info">Outages checked: ${scan.cand.length.toLocaleString('en-US')}${left ? ` of ${scan.planned.toLocaleString('en-US')} (time ran out)` : ''} ${scope}</div>` : '');
+  const pre = cmp.pre && cmp.pre.n ? `<div class="muted ck-note">Without ${newName()} the other plants already cannot cover ${cmp.pre.n === 1 ? 'losing' : `${cmp.pre.n} of these, the worst`} ${unitTitle(cmp.pre.e)} (${fmtMW(cmp.pre.max)} MW short): this grid needs more spare generation either way, so it is not counted against ${newName()}.</div>` : '';
+  return compareHtml(scan) + pre + (scope || left ? `<div class="muted ck-note h-with-info">Outages checked: ${scan.cand.length.toLocaleString('en-US')}${left ? ` of ${scan.planned.toLocaleString('en-US')} (time ran out)` : ''} ${scope}</div>` : '');
 }
 function n0Html() {
   if (!S.base.ok || !S.orig.ok) return addResultHtml();
@@ -5742,8 +5970,9 @@ ${table(['Unit out', 'Problem (without the new connections)', 'Fine up to'], top
 <h2>Method</h2>
 <ul>
   <li>${ac ? 'AC power flow (Newton-Raphson), generators held to their reactive limits' : 'DC power flow'}, solved in the explorer; its answers agree with MATPOWER to about 1e-10 pu.</li>
-  <li>Problems are counted against the new connections only where they add to them. With every line in: a line pushed over its rating (Rate A; one already over, once it is ${WORSE_PTS}% further over) or a voltage moved ${WORSE_PU} pu or more to outside 0.95–1.05 pu. After an outage: a line ending over its rating with them adding ${WORSE_PTS}% of the rating or more, a voltage under 0.90 pu pulled down ${WORSE_PU} pu or more, more load lost, or no power-flow answer. Problems the grid has without them are not counted.</li>
-  <li>When a unit trips, or a new connection drops off, the other plants share out the difference in proportion to their spare room, as governors and dispatch would.</li>
+  <li>Problems are counted against the new connections only where they add to them. With every line in: a line pushed over its rating (Rate A; one already over, once it is ${WORSE_PTS}% further over) or a voltage moved ${WORSE_PU} pu or more to outside 0.95–1.05 pu. After an outage: a line ending over its rating with them adding ${WORSE_PTS}% of the rating or more, a voltage under 0.90 pu pulled down ${WORSE_PU} pu or more, more load lost, a plant outage the other plants could cover without them but not with them, or no power-flow answer. Problems the grid has without them are not counted.</li>
+  <li>When a unit trips, or a new connection drops off, the other plants share out the difference in proportion to their spare room, as governors and dispatch would. Nuclear, wind and solar plants cannot go up.</li>
+  <li>Where an outage splits the grid, the part with most of the load covers what it lost the same way. A smaller part must balance itself in seconds: governors on a 5% droop move each plant at most ${Math.round(GOV_MAX * 100)}% of its rating (nuclear not at all, wind and solar only down), under-frequency load shedding covers a shortfall of up to ${SHED_MAX * 100}% of its load (NERC PRC-006), and with more power than its governors can take off its largest units trip on over-frequency. A part left short of more goes dark.</li>
   <li>Grid strength: the fault level with every line in, synchronous machines behind their subtransient reactance from the case's dynamic data, loads and converter-fed plants left out; SCR is the fault level over the connection's size (3 and up counts as strong).</li>
   <li>${M.name} is a synthetic grid (Texas A&amp;M ACTIVSg cases): it looks and behaves like a real system but is not one. Use this as a first screen, not as a substitute for the transmission owner's studies (dynamics, protection, local data).</li>
 </ul>
@@ -5796,12 +6025,12 @@ function startRoom() {
   // the other machines' share of each MW: in proportion to their room (all plants), or none (the balancing plant)
   const bal = new Float64Array(J.dim);
   let mroom = 0;
-  for (let k = 0; k < nL; k++) { const i = L[k]; if (M.ng[i] && M.comp[i] === main) mroom += kind === 'load' ? Math.max(0, M.pmax[i] - M.pg[i]) : Math.max(0, M.pg[i] - Math.max(0, M.pmin[i])); }
+  for (let k = 0; k < nL; k++) { const i = L[k]; if (M.comp[i] === main) mroom += kind === 'load' ? roomUp(M, i) : roomDown(M, i); }
   if (S.src !== 'slack' && mroom > 0) {
     for (let k = 0; k < nL; k++) {
       const i = L[k];
       if (!M.ng[i] || M.comp[i] !== main || J.vth[k] < 0) continue;
-      const r = kind === 'load' ? Math.max(0, M.pmax[i] - M.pg[i]) : Math.max(0, M.pg[i] - Math.max(0, M.pmin[i]));
+      const r = kind === 'load' ? roomUp(M, i) : roomDown(M, i);
       bal[J.vth[k]] = (-sgn * r) / mroom / base;
     }
   }
